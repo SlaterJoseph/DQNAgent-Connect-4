@@ -22,7 +22,7 @@ UPDATE_TARGET_EVERY = 5
 MIN_REWARD = -200
 MEMORY_FRACTION = 0.20
 
-EPISODES = 20_000
+EPISODES = 35_000
 
 epsilon = 1
 EPSILON_DECAY = 0.99975
@@ -61,7 +61,7 @@ class DQNAgent:
         model.add(Dense(256))
         model.add(Dropout(0.2))
         model.add(Dense(7, activation='linear'))
-        model.compile(loss='mse', optimizer=Adam(lr=0.001), metrics=['accuracy'])
+        model.compile(loss='mse', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
         return model
 
     def update_replay_memory(self, transition):
@@ -69,11 +69,12 @@ class DQNAgent:
         self.replay_memory.append(transition)
 
     def get_qs(self, state):
+        print(self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0])
         return self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0]
 
-    def punish(self, penalty, state, action):
-        q_values = self.get_qs(state)
-        q_values[action] = penalty
+    # def punish(self, penalty, state, action):
+    #     q_values = self.get_qs(state)
+    #     q_values[action] = penalty
 
     def train(self, terminal_state):
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:  # Do not train if small sample size
@@ -101,7 +102,7 @@ class DQNAgent:
             X.append(current_state)
             y.append(current_qs)
 
-        self.model.fit(np.array(X)/255, np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False,
+        self.model.fit(np.array(X) / 255, np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False,
                        callbacks=[self.tensorboard] if terminal_state else None)
 
         # Updating to determine if it is time to update target model
@@ -114,17 +115,26 @@ class DQNAgent:
 
 
 class ModifiedTensorBoard(TensorBoard):
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.step = 1
         self.writer = tf.summary.create_file_writer(self.log_dir)
-        self._log_write_dir = os.path.join(self.log_dir, MODEL_NAME)
+        self._log_write_dir = self.log_dir
 
     def set_model(self, model):
-        pass
+        self.model = model
+
+        self._train_dir = os.path.join(self._log_write_dir, 'train')
+        self._train_step = self.model._train_counter
+
+        self._val_dir = os.path.join(self._log_write_dir, 'validation')
+        self._val_step = self.model._test_counter
+
+        self._should_write_train_graph = False
 
     def on_epoch_end(self, epoch, logs=None):
-        self.update_statues(**logs)
+        self.update_stats(**logs)
 
     def on_batch_end(self, batch, logs=None):
         pass
@@ -133,13 +143,9 @@ class ModifiedTensorBoard(TensorBoard):
         pass
 
     def update_stats(self, **stats):
-        self._write_logs(stats, self.step)
-
-    def _write_logs(self, logs, index):
         with self.writer.as_default():
-            for name, value in logs.items():
-                tf.summary.scalar(name, value, step=index)
-                self.step += 1
+            for key, value in stats.items():
+                tf.summary.scalar(key, value, step = self.step)
                 self.writer.flush()
 
 
@@ -155,7 +161,7 @@ class Board:
             [0, 0, 0, 0, 0, 0, 0],
         ]
         self.size = 0
-        self.valid_cols = [x for x in range(7)]
+        self.valid_cols = {x for x in range(7)}
 
     def clear(self):
         self.board = [
@@ -167,6 +173,7 @@ class Board:
             [0, 0, 0, 0, 0, 0, 0],
         ]
         self.size = 0
+        self.valid_cols = {x for x in range(7)}
 
     def __str__(self):
         base = str()
@@ -184,7 +191,7 @@ class Board:
     def col_full(self, col):
         """Lets us know if a column is full"""
         if self.board[0][col] != 0:
-            print(f'Removing {col} from {self.valid_cols}')
+            print(f'Removing {col} from {self.valid_cols} on Board')
             self.valid_cols.remove(col)
             return True
         return False
@@ -214,9 +221,11 @@ class Board:
                 break
 
         self.board[safe_row][col] = player_id
-        # print(self)
 
+        if safe_row == 0:  # Removes columns as they are filled
+            self.valid_cols.remove(col)
         self.size += 1  # Increase the piece count
+
         return self.found_winner(safe_row, col)  # Return if a winner is found
 
     def found_winner(self, x, y):
@@ -287,17 +296,15 @@ class Board:
 
                 return count >= 4
 
-            if across() or up() or diagonal_1() or diagonal_2():
-                return 1
-            else:
-                return 2
+        if across() or up() or diagonal_1() or diagonal_2():
+            return 1  # Winner found
+        elif self.size == 42:
+            return -2  # Draw
+        else:
+            return 2  # Continue playing
 
 
 class RandomBot:
-    def __init__(self):
-        """Create the player move list and the number id associated with it"""
-        self.possible_moves = [x for x in range(7)]
-
     # def __str__(self):
     #     """For Testing"""
     #     return f'Child: id - {self.id}'
@@ -307,12 +314,7 @@ class RandomBot:
 
     def action(self):
         """Makes a completely random move"""
-        col = random.choice(self.possible_moves)
-
-        if BOARD.col_full(col):
-            self.possible_moves.remove(col)
-            self.action()
-
+        col = random.choice(list(BOARD.get_valid_moves()))
         return col
 
 
@@ -321,7 +323,7 @@ class Connect4Env:
     SIZE_COLUMNS = 7
     RETURN_IMAGES = True
     # First 4 will be negative
-    MOVE_PENALTY = 1
+    MOVE_PENALTY = 0.001
     GAME_LOSS_PENALTY = 300
     GAME_DRAW_PENALTY = 100
     ILLEGAL_MOVE_PENALTY = 1_200  # Want to quickly remove illegal moves
@@ -344,7 +346,7 @@ class Connect4Env:
         return BOARD.board_state()  # Return the current state (Which is empty)
 
     def step(self, turn_action, user):
-        if user == self.player_1[1]: # Finds if this move was the 1st player or 2nd
+        if user == self.player_1[1]:  # Finds if this move was the 1st player or 2nd
             result = BOARD.drop(turn_action, self.player_1[0])  # 1 is the piece
         else:
             result = BOARD.drop(turn_action, self.player_2[0])  # -1 is the piece
@@ -375,7 +377,7 @@ agent = DQNAgent()
 bot = RandomBot()
 env = Connect4Env()
 BOARD = Board()
-
+result = {-300: 'Bot Win', -100: 'Draw', 100: 'Agent Win'}
 ep_rewards = [-200]
 
 if not os.path.isdir('models'):
@@ -388,85 +390,144 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
     step = 1
     turn = 1
     done = False
-    before_loss = [current_state, None]
+    before_loss = [current_state, None, None]
 
-    if random.randint(0, 1) == 0:  # Choosing who goes first
+    if random.randint(0, 2) == 0:  # Choosing who goes first
         player_1, player_2, env.player_1[1], env.player_2[1] = agent, bot, agent, bot
-        print('Player 1 - Agent, Player 2 - Bot')
+        players = {player_1: 'Agent', player_2: 'Bot'}
     else:
         player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
-        print('Player 1 - Bot, Player 2 - Agent')
+        players = {player_1: 'Bot', player_2: 'Agent'}
 
     while not done:
-        if turn == 1: # Odd Moves
+        if turn == 1:  # Odd Moves
+            player = players[player_1]
             if player_1 == agent:  # Agent goes 1st
                 if np.random.random() > epsilon:
-                    action = np.argmax(agent.get_qs(current_state, step))
+                    action = np.sort(agent.get_qs(current_state))[::-1]  # Descending sort
                     is_epsi = True
                 else:
-                    action = np.random.randint(0, 6)
+                    action = random.choice(list(BOARD.get_valid_moves()))
                     is_epsi = False
-                print(f'Turn: {turn} \nAction taken was {action}\nBoard is \n{BOARD}')
+                # print(f'{player} chose action {action}')
 
-                while BOARD.col_full(action):  # While we keep doing invalid moves, punish and find new input
-                    agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
-                    if is_epsi:
-                        action = np.argmax(agent.get_qs(current_state))
-                        is_epsi = True
-                    else:
-                        action = np.random.randint(0, 6)
-                        is_epsi = False
+                counter = 0
+                if is_epsi:  # epsilon gives a invalid move
+                    while action[counter] not in BOARD.get_valid_moves() and counter < 7 :
+                        # While we keep doing invalid moves, punish and find new input
+                        # print(f'{action} column filled, punishing')
+                        # agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
+                        agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                                                    current_state, done))
+                        counter += 1  # Move to the next index
+                    else:  # Random move is invalid
+                        action = random.choice(list(BOARD.get_valid_moves()))
+                    # print(f'New action is {action}')
+
+                if counter >= 7:
+                    print('NO VALID MOVES')
+                    print(BOARD.get_valid_moves())
+                    print(BOARD)
+
+
+                    # if counter > 100:
+                    #     print(BOARD)
+                    #     print(BOARD.get_valid_moves(), action)
+                    #     print(agent.model.predict(np.array(current_state).reshape(-1, *current_state.shape) / 255))
 
                 new_state, reward, done = env.step(action, agent)
-                before_loss[0], before_loss[1] = current_state, action
+                if reward == env.GAME_DRAW_PENALTY:
+                    reward = -env.GAME_DRAW_PENALTY
+                elif reward == env.MOVE_PENALTY:
+                    reward = -env.MOVE_PENALTY
+
+                before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
 
                 agent.update_replay_memory((current_state, action, reward, new_state, done))
                 agent.train(done)
+
             else:  # Bot goes 1st
                 action = bot.action()
-                print(f'Turn: {turn} \nAction taken was {action}\nBoard is \n{BOARD}')
+                # print(f'{player} chose action {action}')
                 new_state, reward, done = env.step(action, bot)
+
                 if reward == env.GAME_WIN_REWARD:
-                    agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
-
-
+                    # agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
+                    agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
+                                                new_state, done))
+                    print('Result: Bot Win')
+                elif reward == -env.GAME_DRAW_PENALTY:
+                    # agent.punish(-env.GAME_DRAW_PENALTY, before_loss[0], before_loss[1])
+                    agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
+                                                new_state, done))
+                    print('Result: Draw')
         else:  # Even Moves
+            player = players[player_2]
             if player_2 == agent:  # Agent goes 2nd
                 if np.random.random() > epsilon:
                     action = np.argmax(agent.get_qs(current_state))
                     is_epsi = True
                 else:
-                    action = np.random.randint(0, 6)
+                    action = random.choice(list(BOARD.get_valid_moves()))
                     is_epsi = False
-                print(f'Turn: {turn} \nAction taken was {action}\nBoard is \n{BOARD}')
+                # print(f'{player} chose action {action}')
 
-                while BOARD.col_full(action):  # While we keep doing invalid moves, punish and find new input
-                    print(f'{action} column filled, punishing')
-                    agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
-                    if is_epsi:
-                        action = np.argmax(agent.get_qs(current_state))
-                        is_epsi = True
-                    else:
-                        action = np.random.randint(0, 6)
-                        is_epsi = False
+                counter = 0
+                if is_epsi:  # epsilon gives a invalid move
+                    while action[counter] not in BOARD.get_valid_moves() and counter < 7:
+                        # While we keep doing invalid moves, punish and find new input
+                        # print(f'{action} column filled, punishing')
+                        # agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
+                        agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                                                    current_state, done))
+                        counter += 1  # Move to the next index
+                else:  # Random move is invalid
+                    action = random.choice(list(BOARD.get_valid_moves()))
+
+                if counter >= 7:
+                    print('NO VALID MOVES')
+                    print(BOARD.get_valid_moves())
+                    print(BOARD)
+
+                    # if counter > 100:
+                    #     print(BOARD)
+                    #     print(BOARD.get_valid_moves(), action)
+                    #     print(agent.model.predict(np.array(current_state).reshape(-1, *current_state.shape) / 255))
+
+                    # print(f'New action is {action}')
 
                 new_state, reward, done = env.step(action, agent)
-                before_loss[0], before_loss[1] = current_state, action
+                if reward == env.GAME_DRAW_PENALTY:
+                    reward = -env.GAME_DRAW_PENALTY
+                elif reward == env.MOVE_PENALTY:
+                    reward = -env.MOVE_PENALTY
+
+                before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
 
                 agent.update_replay_memory((current_state, action, reward, new_state, done))
                 agent.train(done)
             else:  # Bot goes 2nd
-                print(f'Turn: {turn} \nAction taken was {action}\nBoard is \n{BOARD}')
                 action = bot.action()
+                # print(f'{player} chose action {action}')
+
                 new_state, reward, done = env.step(action, bot)
                 if reward == env.GAME_WIN_REWARD:
-                    agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
+                    # agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
+                    agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
+                                                new_state, done))
+                elif reward == -env.GAME_DRAW_PENALTY:
+                    # agent.punish(-env.GAME_DRAW_PENALTY, before_loss[0], before_loss[1])
+                    agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
+                                                new_state, done))
 
         turn *= -1
         current_state = new_state
         step += 1
+        # print(BOARD)
+        # print(f'Is complete? {done}')
+    print(f'Episode #{episode}, Result: {result[reward]}, Epsilon {epsilon}')
 
     ep_rewards.append(episode_reward)
     if not episode % AGGREGATE_STATS_EVERY or episode == 1:
@@ -477,11 +538,9 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                                        reward_max=max_reward, epsilon=epsilon)
 
         if min_reward >= MIN_REWARD:
-            agent.model.save(agent.model.savef('models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
-                                              f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model'))
+            agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
+                             f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
-        if epsilon > MIN_EPSILON:
+        if epsilon > MIN_EPSILON and turn:
             epsilon *= EPSILON_DECAY
             epsilon = max(MIN_EPSILON, epsilon)
-
-
