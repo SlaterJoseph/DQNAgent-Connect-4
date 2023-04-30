@@ -1,3 +1,4 @@
+import numpy
 import tensorflow as tf
 import numpy as np
 from keras.models import Sequential
@@ -20,12 +21,11 @@ DISCOUNT = 0.99
 UPDATE_TARGET_EVERY = 5
 
 MIN_REWARD = -200
-MEMORY_FRACTION = 0.20
 
 EPISODES = 35_000
 
 epsilon = 1
-EPSILON_DECAY = 0.99975
+EPSILON_DECAY = 0.9975
 MIN_EPSILON = 0.001
 
 AGGREGATE_STATS_EVERY = 50
@@ -50,16 +50,16 @@ class DQNAgent:
         model.add(InputLayer(input_shape=(6, 7, 1)))  # Dimension of the 2d list with 1 for greyscale
         model.add(Conv2D(64, (3, 3), activation='relu', padding='same'))
         # model.add(MaxPooling2D(2, 2))
-        model.add(Dropout(0.2))
+        model.add(Dropout(0.3))
         model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
         # model.add(MaxPooling2D(2, 2))
-        model.add(Dropout(0.2))
+        model.add(Dropout(0.3))
 
         model.add(Flatten())
-        model.add(Dense(128))
-        model.add(Dropout(0.2))
         model.add(Dense(256))
-        model.add(Dropout(0.2))
+        model.add(Dropout(0.3))
+        model.add(Dense(128))
+        model.add(Dropout(0.3))
         model.add(Dense(7, activation='linear'))
         model.compile(loss='mse', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
         return model
@@ -69,17 +69,14 @@ class DQNAgent:
         self.replay_memory.append(transition)
 
     def get_qs(self, state):
-        print(self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0])
+        # print(self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0])
+        # print(state, state.shape)
         return self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0]
-
-    # def punish(self, penalty, state, action):
-    #     q_values = self.get_qs(state)
-    #     q_values[action] = penalty
 
     def train(self, terminal_state):
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:  # Do not train if small sample size
             return
-
+        # print('TRAINING')
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
         current_states = np.array([transition[0] for transition in minibatch]) / 255
         current_qs_list = self.model.predict(current_states)
@@ -96,8 +93,18 @@ class DQNAgent:
             else:
                 new_q = reward
 
+            # try:
+            # print(f'Current State\n{current_state}\nAction: {action}\nReward: {reward})
+            # print(New Current State{new_current_state}\nDone: {done}')
+            # print(type(action))
+            if type(action) == np.ndarray:
+                action = np.argmax(action)
+                # print(f'New action in {action}')
             current_qs = current_qs_list[index]
             current_qs[action] = new_q
+            # except IndexError:
+            #     print(f'Error training with {index}, {current_state, action, reward, new_current_state, done}')
+            #     continue
 
             X.append(current_state)
             y.append(current_qs)
@@ -145,7 +152,7 @@ class ModifiedTensorBoard(TensorBoard):
     def update_stats(self, **stats):
         with self.writer.as_default():
             for key, value in stats.items():
-                tf.summary.scalar(key, value, step = self.step)
+                tf.summary.scalar(key, value, step=self.step)
                 self.writer.flush()
 
 
@@ -191,7 +198,7 @@ class Board:
     def col_full(self, col):
         """Lets us know if a column is full"""
         if self.board[0][col] != 0:
-            print(f'Removing {col} from {self.valid_cols} on Board')
+            # print(f'Removing {col} from {self.valid_cols} on Board')
             self.valid_cols.remove(col)
             return True
         return False
@@ -204,8 +211,8 @@ class Board:
         1 - Winner Found
         2 - Basic move
         """
-        # print(f'In drop: col = {col} : player_id = {player_id}')
 
+        # print(self.size)
         if self.size == 42:  # Board full, draw
             return -2
         if self.col_full(col):  # If full, return -1
@@ -327,7 +334,7 @@ class Connect4Env:
     GAME_LOSS_PENALTY = 300
     GAME_DRAW_PENALTY = 100
     ILLEGAL_MOVE_PENALTY = 1_200  # Want to quickly remove illegal moves
-    GAME_WIN_REWARD = 100
+    GAME_WIN_REWARD = 200
     OBSERVATION_SPACE_VALUES = (SIZE_COLUMNS, SIZE_ROWS, 3)
     ACTION_SPACE_SIZE = 7
     player_1 = [1, None]
@@ -351,6 +358,7 @@ class Connect4Env:
         else:
             result = BOARD.drop(turn_action, self.player_2[0])  # -1 is the piece
 
+        # print(result)
         if result == -2:  # Draw
             move_reward = -self.GAME_DRAW_PENALTY
         elif result == -1:  # Illegal Move || THIS CODE SHOULD NEVER BE REACHED
@@ -372,13 +380,14 @@ class Connect4Env:
         self.episode_step += 1
         return np.array(BOARD.board_state()), move_reward, complete
 
-
 agent = DQNAgent()
 bot = RandomBot()
 env = Connect4Env()
 BOARD = Board()
-result = {-300: 'Bot Win', -100: 'Draw', 100: 'Agent Win'}
-ep_rewards = [-200]
+results = {-300: 'Bot Win', -100: 'Draw', 200: 'Agent Win'}
+ep_rewards = [0]
+# print(np.array(BOARD.board_state()).shape)
+# print(np.array(BOARD.board_state()))
 
 if not os.path.isdir('models'):
     os.makedirs('models')
@@ -399,12 +408,18 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
         players = {player_1: 'Bot', player_2: 'Agent'}
 
+    # print(players)
+
     while not done:
         if turn == 1:  # Odd Moves
             player = players[player_1]
+            q_dict = dict()
             if player_1 == agent:  # Agent goes 1st
                 if np.random.random() > epsilon:
-                    action = np.sort(agent.get_qs(current_state))[::-1]  # Descending sort
+                    action = agent.get_qs(current_state)
+                    # print(action)
+                    q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
+                              action[4]: 4, action[5]: 5, action[6]: 6}
                     is_epsi = True
                 else:
                     action = random.choice(list(BOARD.get_valid_moves()))
@@ -413,30 +428,41 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                 counter = 0
                 if is_epsi:  # epsilon gives a invalid move
-                    while action[counter] not in BOARD.get_valid_moves() and counter < 7 :
+                    while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
                         # While we keep doing invalid moves, punish and find new input
                         # print(f'{action} column filled, punishing')
-                        # agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
                         agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
                         counter += 1  # Move to the next index
-                    else:  # Random move is invalid
-                        action = random.choice(list(BOARD.get_valid_moves()))
-                    # print(f'New action is {action}')
+                    action = q_dict[action[counter]]  # Assigning action its index/col
+                else:  # Random move is invalid
+                    agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                                                current_state, done))
+                    action = random.choice(list(BOARD.get_valid_moves()))
 
                 if counter >= 7:
                     print('NO VALID MOVES')
                     print(BOARD.get_valid_moves())
                     print(BOARD)
 
-
                     # if counter > 100:
                     #     print(BOARD)
                     #     print(BOARD.get_valid_moves(), action)
                     #     print(agent.model.predict(np.array(current_state).reshape(-1, *current_state.shape) / 255))
+                # print(counter)
+                # if type(action) == list():
+                #     print(action[counter])
+                #     if action[counter] in q_dict:
+                #         print(q_dict[action[counter]])
+                # print(BOARD)
+
+                # print(action)
+                # print(BOARD)
 
                 new_state, reward, done = env.step(action, agent)
                 if reward == env.GAME_DRAW_PENALTY:
+                    # print(action, done, reward)
+                    # print(new_state)
                     reward = -env.GAME_DRAW_PENALTY
                 elif reward == env.MOVE_PENALTY:
                     reward = -env.MOVE_PENALTY
@@ -453,20 +479,22 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 new_state, reward, done = env.step(action, bot)
 
                 if reward == env.GAME_WIN_REWARD:
-                    # agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
                     agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
-                    print('Result: Bot Win')
+                    # print('Here 1')
                 elif reward == -env.GAME_DRAW_PENALTY:
-                    # agent.punish(-env.GAME_DRAW_PENALTY, before_loss[0], before_loss[1])
                     agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
-                    print('Result: Draw')
+                    # print('Here 2')
         else:  # Even Moves
             player = players[player_2]
+            q_dict = dict()
             if player_2 == agent:  # Agent goes 2nd
                 if np.random.random() > epsilon:
-                    action = np.argmax(agent.get_qs(current_state))
+                    action = agent.get_qs(current_state)
+
+                    q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
+                              action[4]: 4, action[5]: 5, action[6]: 6}
                     is_epsi = True
                 else:
                     action = random.choice(list(BOARD.get_valid_moves()))
@@ -475,14 +503,18 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                 counter = 0
                 if is_epsi:  # epsilon gives a invalid move
-                    while action[counter] not in BOARD.get_valid_moves() and counter < 7:
+                    while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
+                        # print(counter, action[counter], q_dict[action[counter]])
+                        # print(BOARD)
                         # While we keep doing invalid moves, punish and find new input
                         # print(f'{action} column filled, punishing')
-                        # agent.punish(-env.ILLEGAL_MOVE_PENALTY, current_state, action)
                         agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
                         counter += 1  # Move to the next index
+                    action = q_dict[action[counter]]  # Assigning action its index/col
                 else:  # Random move is invalid
+                    agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                                                current_state, done))
                     action = random.choice(list(BOARD.get_valid_moves()))
 
                 if counter >= 7:
@@ -490,15 +522,18 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                     print(BOARD.get_valid_moves())
                     print(BOARD)
 
-                    # if counter > 100:
-                    #     print(BOARD)
-                    #     print(BOARD.get_valid_moves(), action)
-                    #     print(agent.model.predict(np.array(current_state).reshape(-1, *current_state.shape) / 255))
-
                     # print(f'New action is {action}')
+                # print(counter)
+                # if type(action) == list():
+                #     print(action[counter])
+                #     if action[counter] in q_dict:
+                #         print(q_dict[action[counter]])
+                # print(BOARD)
 
                 new_state, reward, done = env.step(action, agent)
                 if reward == env.GAME_DRAW_PENALTY:
+                    # print(action, done, reward)
+                    # print(new_state)
                     reward = -env.GAME_DRAW_PENALTY
                 elif reward == env.MOVE_PENALTY:
                     reward = -env.MOVE_PENALTY
@@ -514,20 +549,23 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                 new_state, reward, done = env.step(action, bot)
                 if reward == env.GAME_WIN_REWARD:
-                    # agent.punish(-env.GAME_LOSS_PENALTY, before_loss[0], before_loss[1])
+                    print('Here 3')
                     agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
                 elif reward == -env.GAME_DRAW_PENALTY:
-                    # agent.punish(-env.GAME_DRAW_PENALTY, before_loss[0], before_loss[1])
+                    print('Here 4')
+                    # print(action, done)
+                    # print(new_state)
                     agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
 
+        # print(BOARD)
         turn *= -1
         current_state = new_state
         step += 1
         # print(BOARD)
         # print(f'Is complete? {done}')
-    print(f'Episode #{episode}, Result: {result[reward]}, Epsilon {epsilon}')
+    print(f'Episode #{episode}, Result: {results[reward]}, Epsilon {epsilon}')
 
     ep_rewards.append(episode_reward)
     if not episode % AGGREGATE_STATS_EVERY or episode == 1:
@@ -541,6 +579,6 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
             agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
                              f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
 
-        if epsilon > MIN_EPSILON and turn:
+        if epsilon > MIN_EPSILON:
             epsilon *= EPSILON_DECAY
             epsilon = max(MIN_EPSILON, epsilon)
