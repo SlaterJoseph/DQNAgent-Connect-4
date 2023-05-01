@@ -15,8 +15,8 @@ from tqdm import tqdm
 
 REPLAY_MEMORY_SIZE = 100_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = '256x2'
-MINIBATCH_SIZE = 64
+MODEL_NAME = '256x2-V2'
+MINIBATCH_SIZE = 32
 DISCOUNT = 0.99
 UPDATE_TARGET_EVERY = 5
 
@@ -48,12 +48,12 @@ class DQNAgent:
         """Creates both the target model and the main model"""
         model = Sequential()
         model.add(InputLayer(input_shape=(6, 7, 1)))  # Dimension of the 2d list with 1 for greyscale
-        model.add(Conv2D(64, (3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
         # model.add(MaxPooling2D(2, 2))
         model.add(Dropout(0.3))
-        model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
-        # model.add(MaxPooling2D(2, 2))
-        model.add(Dropout(0.3))
+        # model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+        # # model.add(MaxPooling2D(2, 2))
+        # model.add(Dropout(0.3))
 
         model.add(Flatten())
         model.add(Dense(256))
@@ -460,12 +460,6 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 # print(BOARD)
 
                 new_state, reward, done = env.step(action, agent)
-                if reward == env.GAME_DRAW_PENALTY:
-                    # print(action, done, reward)
-                    # print(new_state)
-                    reward = -env.GAME_DRAW_PENALTY
-                elif reward == env.MOVE_PENALTY:
-                    reward = -env.MOVE_PENALTY
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
@@ -478,7 +472,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 # print(f'{player} chose action {action}')
                 new_state, reward, done = env.step(action, bot)
 
-                if reward == env.GAME_WIN_REWARD:
+                if reward == -env.GAME_LOSS_PENALTY:
                     agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
                     # print('Here 1')
@@ -531,12 +525,6 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 # print(BOARD)
 
                 new_state, reward, done = env.step(action, agent)
-                if reward == env.GAME_DRAW_PENALTY:
-                    # print(action, done, reward)
-                    # print(new_state)
-                    reward = -env.GAME_DRAW_PENALTY
-                elif reward == env.MOVE_PENALTY:
-                    reward = -env.MOVE_PENALTY
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
@@ -548,12 +536,12 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 # print(f'{player} chose action {action}')
 
                 new_state, reward, done = env.step(action, bot)
-                if reward == env.GAME_WIN_REWARD:
-                    print('Here 3')
+                if reward == -env.GAME_LOSS_PENALTY:
+                    # print('Here 3')
                     agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
                 elif reward == -env.GAME_DRAW_PENALTY:
-                    print('Here 4')
+                    # print('Here 4')
                     # print(action, done)
                     # print(new_state)
                     agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
@@ -565,7 +553,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         step += 1
         # print(BOARD)
         # print(f'Is complete? {done}')
-    print(f'Episode #{episode}, Result: {results[reward]}, Epsilon {epsilon}')
+    print(f'Episode #{episode}, Result: {results[reward]}, Reward: {reward}, Epsilon {epsilon}')
 
     ep_rewards.append(episode_reward)
     if not episode % AGGREGATE_STATS_EVERY or episode == 1:
