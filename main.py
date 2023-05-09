@@ -1,8 +1,7 @@
-import numpy
 import tensorflow as tf
 import numpy as np
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Conv2D, Flatten, InputLayer
+from keras.layers import Dense, Dropout, Conv2D, Flatten, InputLayer, MaxPooling2D
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
 
@@ -13,19 +12,19 @@ import time
 
 from tqdm import tqdm
 
-REPLAY_MEMORY_SIZE = 100_000
+REPLAY_MEMORY_SIZE = 10_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = '256x2_V2'
+MODEL_NAME = 'V10-256x2'
 MINIBATCH_SIZE = 64
 DISCOUNT = 0.99
 UPDATE_TARGET_EVERY = 5
 
-MIN_REWARD = -200
+MIN_REWARD = -60_000
 
-EPISODES = 20_000
+EPISODES = 100_000
 
-epsilon = 1
-EPSILON_DECAY = 0.995
+epsilon = 0
+EPSILON_DECAY = 0.9950
 MIN_EPSILON = 0.001
 
 AGGREGATE_STATS_EVERY = 50
@@ -34,7 +33,6 @@ SHOW_PREVIEW = False
 
 class DQNAgent:
     def __init__(self, weights=None):
-        # print(weights)
         self.model = self.create_model()  # main model
 
         self.target_model = self.create_model()  # target model
@@ -53,19 +51,24 @@ class DQNAgent:
         """Creates both the target model and the main model"""
         model = Sequential()
         model.add(InputLayer(input_shape=(6, 7, 1)))  # Dimension of the 2d list with 1 for greyscale
-        model.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
+
+        model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
         # model.add(MaxPooling2D(2, 2))
-        model.add(Dropout(0.3))
-        # model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
-        # # model.add(MaxPooling2D(2, 2))
-        # model.add(Dropout(0.3))
+        # model.add(Dropout(0.2))
+
+        model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+        model.add(MaxPooling2D(2, 2))
+        # model.add(Dropout(0.2))
+
+        # model.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
+        # model.add(Dropout(0.2))
 
         model.add(Flatten())
-        model.add(Dense(256))
-        model.add(Dropout(0.3))
-        model.add(Dense(128))
-        model.add(Dropout(0.3))
-        model.add(Dense(7, activation='linear'))
+        model.add(Dense(256, activation='relu'))
+        model.add(Dropout(0.2))
+        model.add(Dense(128, activation='relu'))
+        model.add(Dropout(0.2))
+        model.add(Dense(7, activation='softmax'))
         model.compile(loss='mse', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
         return model
 
@@ -74,6 +77,8 @@ class DQNAgent:
         self.replay_memory.append(transition)
 
     def get_qs(self, state):
+        # print(BOARD)
+        # print(self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0])
         return self.model.predict(np.array(state).reshape(-1, *state.shape) / 255)[0]
 
     def train(self, terminal_state):
@@ -95,16 +100,27 @@ class DQNAgent:
             else:
                 new_q = reward
 
-            if type(action) == np.ndarray:
-                action = np.argmax(action)
-            current_qs = current_qs_list[index]
-            current_qs[action] = new_q
+            # if type(action) == np.ndarray:
+            #     action = np.argmax(action)
+            try:
+                current_qs = current_qs_list[index]
+                current_qs[action] = new_q
+            except IndexError:
+                print(f'Current State: {current_state}\nAction: {action}\nReward: {reward}\n'
+                      f'N. Current State: {new_current_state}\nDone: {done}')
+                continue
+
 
             X.append(current_state)
             y.append(current_qs)
-
-        self.model.fit(np.array(X) / 255, np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False,
-                       callbacks=[self.tensorboard] if terminal_state else None)
+        try:
+            self.model.fit(np.array(X) / 255, np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False,
+                           callbacks=[self.tensorboard] if terminal_state else None)
+        except tf.errors.ResourceExhaustedError as e:
+            print(f'Error is {e}')
+            print(f'Relevant info:\n'
+                  f'X - {X}\n'
+                  f'y - {y}')
 
         # Updating to determine if it is time to update target model
         if terminal_state:
@@ -184,9 +200,11 @@ class Board:
 
     def valid_move_check(self, x, y):
         """Returns if the current move is possible"""
+        if x > 5 or y > 6:
+            return False
         if x == 5:  # Bottom piece is always a valid move
             return True
-        if self.board[x - 1][y] != 0:  # If there is a piece in the spot below, it is a valid move
+        if self.board[x + 1][y] != 0:  # If there is a piece in the spot below, it is a valid move
             return True
         return False
 
@@ -199,9 +217,12 @@ class Board:
 
     def col_full(self, col):
         """Lets us know if a column is full"""
-        if self.board[0][col] != 0:
-            self.valid_cols.remove(col)
-            return True
+        try:
+            if self.board[0][col] != 0:
+                self.valid_cols.remove(col)
+                return True
+        except TypeError:
+            print(f'New State: {new_state}\nReward: {reward}\nDone: {done}\nL. Block Lock: {last_block_loc}')
         return False
 
     def drop(self, col, player_id):
@@ -213,105 +234,34 @@ class Board:
         2 - 3 in a row detected
         3 - Basic Move
         """
-
+        block_loc = None
         if self.size == 42:  # Board full, draw
-            return -2, None, (None, None)
+            return -2, (None, None), block_loc
         if self.col_full(col):  # If full, return -1
-            return -1, None, (None, None)
+            return -1, (None, None), block_loc
 
         safe_row = -1
-        for x in range(0, 6):  # Finds the first spot open to drop a piece
-            if self.board[x][col] != 0:
-                safe_row = x - 1  # Represents the first open spot
+        for x in range(5, -1, -1):  # Finds the first spot open to drop a piece
+            if self.board[x][col] == 0:
+                safe_row = x  # Represents the first open spot
                 break
 
         self.board[safe_row][col] = player_id  # Turn that spot for the player
-
+        three_in_a_row = self.three_in_a_row(safe_row, col)
         if safe_row == 0:  # Removes columns as they are filled
             self.valid_cols.remove(col)
         self.size += 1  # Increase the piece count
 
         if self.four_in_a_row(safe_row, col):
-            return 1, None, (safe_row, col)
-        elif self.three_in_a_row(safe_row, col)[0]:
-            return 2, self.three_in_a_row(safe_row, col)[1], (safe_row, col)
+            return 1, (safe_row, col), block_loc
+        elif self.size == 42:  # Board is now filled
+            return -2, (None, None), block_loc
+        elif three_in_a_row[0]:
+            block_loc = three_in_a_row[1]
+            # print(f'returning {2, (safe_row, col), block_loc}')
+            return 2, (safe_row, col), block_loc
         else:
-            return 3, None, (safe_row, col)
-
-    # def found_winner(self, x, y):
-    #     """
-    #     Checks if the most recent move found a winner
-    #     1 - Winner found
-    #     2 - No winner found
-    #     """
-    #
-    #     def across():  # Row check
-    #         row = self.board[x]
-    #         for loc in range(3, 7):
-    #             cell_1, cell_2, cell_3, cell_4 = row[loc - 3], row[loc - 2], row[loc - 1], row[loc]
-    #             if cell_1 == cell_2 == cell_3 == cell_4 and cell_1 != 0:
-    #                 return True
-    #             return False
-    #
-    #     def up():  # Col check
-    #         for loc in range(3, 6):
-    #             cell_1, cell_2, cell_3, cell_4 = self.board[loc - 3][y], self.board[loc - 2][y], \
-    #                                              self.board[loc - 1][y], self.board[loc][y]
-    #             # print(f'{cell_1}, {cell_2}, {cell_3}, {cell_4}')
-    #             if cell_1 == cell_2 == cell_3 == cell_4 and cell_1 != 0:
-    #                 return True
-    #         return False
-    #
-    #     def diagonal_1():  # 0,0 to 5,6
-    #         chip = self.board[x][y]
-    #         if chip == 0:  # Edge case
-    #             return False
-    #
-    #         x_down, y_down = x - 1, y - 1  # To top left corner
-    #         count = 1
-    #         while x_down > -1 and y_down > -1 and self.board[x_down][y_down] == chip:
-    #             # print(f'{board[x_down][y_down]}: {x_down}, {y_down}')
-    #             count += 1
-    #             x_down -= 1
-    #             y_down -= 1
-    #
-    #         x_up, y_up = x + 1, y + 1  # To bottom right corner
-    #         while x_up < 6 and y_up < 7 and self.board[x_up][y_up] == chip:
-    #             # print(f'{board[x_up][y_up]}: {x_up}, {y_down}')
-    #             count += 1
-    #             x_up += 1
-    #             y_up += 1
-    #
-    #         return count >= 4
-    #
-    #     def diagonal_2():  # 0,6 to 5,0
-    #         chip = self.board[x][y]
-    #         if chip == 0:  # edge case
-    #             return False
-    #
-    #         x_down, y_up = x - 1, y + 1  # To top left corner
-    #         count = 1
-    #         while x_down > -1 and y_up < 7 and self.board[x_down][y_up] == chip:
-    #             # print(f'{board[x_down][y_down]}: {x_down}, {y_down}')
-    #             count += 1
-    #             x_down -= 1
-    #             y_up += 1
-    #
-    #         x_up, y_down = x + 1, y - 1  # To bottom right corner
-    #         while x_up < 6 and y_down > -1 and self.board[x_up][y_down] == chip:
-    #             # print(f'{board[x_up][y_down]}: {x_up}, {y_down}')
-    #             count += 1
-    #             x_up += 1
-    #             y_down -= 1
-    #
-    #             return count >= 4
-    #
-    #     if across() or up() or diagonal_1() or diagonal_2():
-    #         return 1  # Winner found
-    #     elif self.size == 42:
-    #         return -2  # Draw
-    #     else:
-    #         return 2  # Continue playing
+            return 3, (safe_row, col), block_loc
 
     def four_in_a_row(self, x, y):
         def vertical():
@@ -401,7 +351,9 @@ class Board:
             is_three = False
             for loc in range(2, 6):
                 if self.board[loc - 2][y] == self.board[loc - 1][y] == self.board[loc][y] and self.board[loc][y] != 0:
+                    # print(f'CHECKING {loc - 3, y} if it a valid move')
                     if self.valid_move_check(loc - 3, y):
+                        # print(f'{loc - 3, y} IS VALID')
                         block_pos.append((loc - 3, y))
                     if self.valid_move_check(loc + 1, y):
                         block_pos.append((loc + 1, y))
@@ -490,11 +442,8 @@ class RandomBot:
 class User:
     def action(self):
         """A method which allows the user to make a move"""
-        print('The current board state is:')
-        print(current_state)
+        print(BOARD)
         move = int(input("You're move is: "))
-        if move not in BOARD.get_valid_moves():
-            print('INVALID MOVE: MOVE BEING RANDOMIZED')
         return move if move in BOARD.get_valid_moves() else random.choice(list(BOARD.get_valid_moves()))
 
 
@@ -503,15 +452,15 @@ class Connect4Env:
     SIZE_COLUMNS = 7
     RETURN_IMAGES = True
 
-    GAME_WIN_REWARD = 70
-    BLOCK_ENEMY_REWARD = 50
+    GAME_WIN_REWARD = 70_000
+    BLOCK_ENEMY_REWARD = 500
     THREE_IN_A_ROW_REWARD = 30
-    MOVE_PENALTY = 0
+    MOVE_PENALTY = 1
     # All Below this comment will be turned negative
-    THREE_IN_A_ROW_PENALTY = 40
-    GAME_DRAW_PENALTY = 60
-    GAME_LOSS_PENALTY = 100
-    ILLEGAL_MOVE_PENALTY = 500
+    THREE_IN_A_ROW_PENALTY = 40_000
+    GAME_DRAW_PENALTY = 60_000
+    GAME_LOSS_PENALTY = 100_000
+    ILLEGAL_MOVE_PENALTY = 500_000
 
     OBSERVATION_SPACE_VALUES = (SIZE_COLUMNS, SIZE_ROWS, 3)
     ACTION_SPACE_SIZE = 7
@@ -531,33 +480,29 @@ class Connect4Env:
         self.episode_step = 0
         return BOARD.board_state()  # Return the current state (Which is empty)
 
-    def step(self, turn_action, user):
+    def step(self, turn_action, user, block_loc):
+        # print(block_loc, user)
         if user == self.player_1[1]:  # Finds if this move was the 1st player or 2nd
             result = BOARD.drop(turn_action, self.player_1[0])  # 1 is the piece
         else:
             result = BOARD.drop(turn_action, self.player_2[0])  # -1 is the piece
 
         # print(result)
-
-        last_move = result[2]  # Updates the last move
-
         if result[0] == -2:
             move_reward = -self.GAME_DRAW_PENALTY  # Draw
         elif result[0] == -1:
-            print('ERROR: INVALID MOVE')
             move_reward = -self.ILLEGAL_MOVE_PENALTY  # Illegal Move || THIS CODE SHOULD NEVER BE REACHED
         elif result[0] == 1 and user == bot:  # Loss
             move_reward = -self.GAME_LOSS_PENALTY
         elif result[0] == 1 and user == agent:  # Win
             move_reward = self.GAME_WIN_REWARD
-        elif result[0] == 2 and user == bot and block_loc and last_move not in block_loc:  # Failed to block 3 in a row
-            move_reward = self.THREE_IN_A_ROW_PENALTY
+        elif (result[0] == 3 or result[0] == 2) and block_loc and result[1] not in block_loc:
+            # Failed to block 3 in a row
+            move_reward = -self.THREE_IN_A_ROW_PENALTY
         elif result[0] == 2 and user == agent:  # Agent 3 in a row
             move_reward = self.THREE_IN_A_ROW_REWARD
         else:
             move_reward = -self.MOVE_PENALTY
-
-
 
         if move_reward == self.GAME_WIN_REWARD or move_reward == -self.GAME_LOSS_PENALTY \
                 or move_reward == -self.GAME_DRAW_PENALTY:
@@ -566,39 +511,32 @@ class Connect4Env:
             complete = False
 
         self.episode_step += 1
-        return np.array(BOARD.board_state()), move_reward, complete, result[1]
+        return np.array(BOARD.board_state()), move_reward, complete, result[2]
 
 
-agent_training = int(
-    input("Please indicate which model you wish to train.\n1: New Model\n2: V1 141avg\n3: V2 143 avg\n"))
-if agent_training == 1:
+agent_training = str(
+    input("Please give the path to the model you want to train, or write 'NEW' if you wish to train a new model:  "))
+if agent_training == 'NEW':
     agent = DQNAgent()
-elif agent_training == 2:
-    agent = DQNAgent(
-        tf.keras.models.load_model('models/256x2___200.00max__141.99avg_-100.02min__1682878860.model').get_weights())
 else:
     agent = DQNAgent(
-        tf.keras.models.load_model('models/256x2-V2___200.00max__143.99avg___-0.02min__1682896420.model').get_weights())
+        tf.keras.models.load_model(agent_training).get_weights())
 
-training_mode = int(input("Please give which training you want.\n1: Randomized bot\n2: V1 110avg\n3: V1 141avg\n4: V2 "
-                          "110avg\n5: V2 143avg\nAny other number is user\n"))
-if training_mode == 1:
+training_mode = str(input("Please give path to the model you wish to train against. If you wish to train against "
+                          "the random bot please enter 'RANDOM'. If you wish to manually train the bot please enter"
+                          " 'USER':  "))
+if training_mode == 'RANDOM':
     bot = RandomBot()
-elif training_mode == 2:
-    bot = tf.keras.models.load_model('models/256x2___200.00max__111.99avg___-0.02min__1682878784.model')
-elif training_mode == 3:
-    bot = tf.keras.models.load_model('models/256x2___200.00max__141.99avg_-100.02min__1682878860.model')
-elif training_mode == 4:
-    bot = tf.keras.models.load_model('models/256x2-V2___200.00max__109.99avg_-100.02min__1682895238.model')
-elif training_mode == 5:
-    bot = tf.keras.models.load_model('models/256x2-V2___200.00max__143.99avg___-0.02min__1682896420.model')
-else:
+elif training_mode == 'USER':
     bot = User()
+else:
+    bot = tf.keras.models.load_model(training_mode)
 
 env = Connect4Env()
 BOARD = Board()
-results = {70: 'Agent Win', 50: 'Block Enemy', 30: '3 in a row', 0: 'Move',
-           -40: 'Unblocked 3 in a row', -60: 'Draw', -100: 'Bot Win'}
+results = {70_000: 'Agent Win', 500: 'Block Enemy', 30: '3 in a row', -1: 'Move',
+           -4_000: 'Unblocked 3 in a row', -60_000: 'Draw', -100_000: 'Bot Win'}
+
 ep_rewards = [0]
 
 if not os.path.isdir('models'):  # Creates model directory
@@ -607,24 +545,28 @@ if not os.path.isdir('models'):  # Creates model directory
 for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
     agent.tensorboard.step = episode
     current_state = np.array(env.reset())
+    last_player_state = None
+    last_move = 0
     episode_reward = 0
     step = 1
     turn = 1
     done = False
-    block_loc = None
-    last_move = None
+    last_block_loc = None
     last_reward = 0
     before_loss = [current_state, None, None]
 
     if random.randint(0, 2) == 0:  # Choosing who goes first
         player_1, player_2, env.player_1[1], env.player_2[1] = agent, bot, agent, bot
         players = {player_1: 'Agent', player_2: 'Bot'}
+        player_turn = 1
     else:
         player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
         players = {player_1: 'Bot', player_2: 'Agent'}
-
-    print(players)
-
+        player_turn = -1
+    #
+    # player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
+    # players = {player_1: 'USER', player_2: 'AGENT'}
+    # print(players)
     while not done:
         if turn == 1:  # Odd Moves
             player = players[player_1]
@@ -643,42 +585,57 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 if is_epsi:  # epsilon gives a invalid move
                     while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
                         # While we keep doing invalid moves, punish and find new input
-                        agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                        agent.update_replay_memory((current_state, q_dict[action[counter]], -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
+                        agent.train(done)
                         counter += 1  # Move to the next index
-                    action = q_dict[action[counter]]  # Assigning action its index/col
+                    try:
+                        action = q_dict[action[counter]]  # Assigning action its index/col
+                    except IndexError:
+                        print(f'Action: {action}\n{BOARD}')
+
                 else:  # Random move is invalid
                     agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
                                                 current_state, done))
+                    agent.train(done)
                     action = random.choice(list(BOARD.get_valid_moves()))
 
-                new_state, reward, done, block_loc = env.step(action, agent)
+                new_state, reward, done, last_block_loc = env.step(action, agent, last_block_loc)
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
 
-                agent.update_replay_memory((current_state, action, reward, new_state, done))
-                agent.train(done)
                 last_reward = reward
+                last_move = action
+                if type(action) == np.ndarray:
+                    print(f'Agent Spot 1 action: {action}\nCurrent State:\n{BOARD}')
+
+                agent.update_replay_memory((current_state, last_move, reward, new_state, done))
+                agent.train(done)
 
             else:  # Bot goes 1st
-                if training_mode == 1 or training_mode > 5:
+                if training_mode == 'RANDOM' or training_mode == 'USER':
                     action = bot.action()
                 else:
                     action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
                     if action not in BOARD.get_valid_moves():
                         action = random.choice(list(BOARD.get_valid_moves()))
 
-                new_state, reward, done, block_loc = env.step(action, bot)
+                new_state, reward, done, last_block_loc = env.step(action, bot, last_block_loc)
 
                 if reward == -env.GAME_LOSS_PENALTY:
-                    agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
+                    agent.update_replay_memory((last_player_state, last_move, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
+                    agent.train(done)
                 elif reward == -env.GAME_DRAW_PENALTY:
-                    agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
+                    agent.update_replay_memory((last_player_state, last_move, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
+                    agent.train(done)
 
                 last_reward = reward
+                if type(action) == np.ndarray:
+                    print(f'Bot Spot 1 action: {action}\nCurrent State:\n{BOARD}\n'
+                          f'Previous Agent move: {last_move}\nLast Agent State:\n{last_player_state}')
 
         else:  # Even Moves
             player = players[player_2]
@@ -698,47 +655,65 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 if is_epsi:  # epsilon gives a invalid move
                     while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
                         # While we keep doing invalid moves, punish and find new input
-                        agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                        agent.update_replay_memory((current_state, q_dict[action[counter]], -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
+                        agent.train(done)
                         counter += 1  # Move to the next index
-                    action = q_dict[action[counter]]  # Assigning action its index/col
+                    try:
+                        action = q_dict[action[counter]]  # Assigning action its index/col
+                    except IndexError:
+                        print(f'Action: {action}\n{BOARD}')
                 else:  # Random move is invalid
                     agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
                                                 current_state, done))
                     action = random.choice(list(BOARD.get_valid_moves()))
+                    agent.train(done)
 
-                new_state, reward, done, block_loc = env.step(action, agent)
+                new_state, reward, done, last_block_loc = env.step(action, agent, last_block_loc)
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
 
+                last_reward = reward
+                last_move = action
+                if type(action) == np.ndarray:
+                    print(f'Agent Spot 2 action: {action}\nCurrent State:\n{BOARD}')
+
                 agent.update_replay_memory((current_state, action, reward, new_state, done))
                 agent.train(done)
-                last_reward = reward
 
             else:  # Bot goes 2nd
-                if training_mode == 1 or training_mode > 5:
+                if training_mode == 'RANDOM' or training_mode == 'USER':
                     action = bot.action()
                 else:
                     action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
                     if action not in BOARD.get_valid_moves():
                         action = random.choice(list(BOARD.get_valid_moves()))
-                new_state, reward, done, block_loc = env.step(action, bot)
+                new_state, reward, done, last_block_loc = env.step(action, bot, last_block_loc)
+
                 if reward == -env.GAME_LOSS_PENALTY:
-                    agent.update_replay_memory((current_state, action, -env.GAME_LOSS_PENALTY,
+                    agent.update_replay_memory((last_player_state, last_move, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
+                    agent.train(done)
                 elif reward == -env.GAME_DRAW_PENALTY:
-                    agent.update_replay_memory((current_state, action, -env.GAME_DRAW_PENALTY,
+                    agent.update_replay_memory((last_player_state, last_move, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
+                    agent.train(done)
 
                 last_reward = reward
+                if type(action) == np.ndarray:
+                    print(f'Bot Spot 2 action: {action}\nCurrent State:\n{BOARD}\n'
+                          f'Previous Agent move: {last_move}\nLast Agent State:\n{last_player_state}')
 
+        if player_turn == turn:
+            last_player_state = current_state.copy()
         turn *= -1
         current_state = new_state
         step += 1
-        print(f'Current Move Reward {reward}. Board is \n{BOARD}')
+        # print(f'\n{BOARD}')
+        print(f'Current Move Reward {reward}')
     # Printing episode results
-    print(f'Episode #{episode}, Result: {results[reward]}, Reward: {reward}, Epsilon {epsilon}')
+    print(f'Episode #{episode}, Result: {results[reward]}\nReward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
 
     ep_rewards.append(episode_reward)
     if not episode % AGGREGATE_STATS_EVERY or episode == 1:
@@ -755,3 +730,6 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         if epsilon > MIN_EPSILON:
             epsilon *= EPSILON_DECAY
             epsilon = max(MIN_EPSILON, epsilon)
+
+    if episode % 15000 == 0:  # Reset epsilon every so often
+        epsilon = 1
