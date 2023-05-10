@@ -14,17 +14,17 @@ from tqdm import tqdm
 
 REPLAY_MEMORY_SIZE = 10_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = 'V10-256x2'
+MODEL_NAME = 'V12-256x2'
 MINIBATCH_SIZE = 64
 DISCOUNT = 0.99
 UPDATE_TARGET_EVERY = 5
 
 MIN_REWARD = -60_000
 
-EPISODES = 100_000
+EPISODES = 2_000
 
-epsilon = 0
-EPSILON_DECAY = 0.9950
+epsilon = 1
+EPSILON_DECAY = 0.975
 MIN_EPSILON = 0.001
 
 AGGREGATE_STATS_EVERY = 50
@@ -110,7 +110,6 @@ class DQNAgent:
                       f'N. Current State: {new_current_state}\nDone: {done}')
                 continue
 
-
             X.append(current_state)
             y.append(current_qs)
         try:
@@ -132,7 +131,6 @@ class DQNAgent:
 
 
 class ModifiedTensorBoard(TensorBoard):
-
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.step = 1
@@ -208,6 +206,10 @@ class Board:
             return True
         return False
 
+    def cell_value(self, x, y):
+        """Returns the value stored in a cell"""
+        return self.board[x][y]
+
     def get_valid_moves(self):
         return self.valid_cols
 
@@ -222,7 +224,7 @@ class Board:
                 self.valid_cols.remove(col)
                 return True
         except TypeError:
-            print(f'New State: {new_state}\nReward: {reward}\nDone: {done}\nL. Block Lock: {last_block_loc}')
+            print(f'New State: {new_state}\nReward: {reward}\nDone: {done}')
         return False
 
     def drop(self, col, player_id):
@@ -234,7 +236,7 @@ class Board:
         2 - 3 in a row detected
         3 - Basic Move
         """
-        block_loc = None
+        block_loc = set()
         if self.size == 42:  # Board full, draw
             return -2, (None, None), block_loc
         if self.col_full(col):  # If full, return -1
@@ -258,7 +260,7 @@ class Board:
             return -2, (None, None), block_loc
         elif three_in_a_row[0]:
             block_loc = three_in_a_row[1]
-            # print(f'returning {2, (safe_row, col), block_loc}')
+            # print(f'Returning {2, (safe_row, col), block_loc}')
             return 2, (safe_row, col), block_loc
         else:
             return 3, (safe_row, col), block_loc
@@ -273,8 +275,8 @@ class Board:
 
         def horizontal():
             for loc in range(3, 6):
-                if self.board[loc - 3][y] == self.board[loc - 2][y] == self.board[loc - 1][y] == self.board[loc][y] and \
-                        self.board[loc][y] != 0:
+                if self.board[loc - 3][y] == self.board[loc - 2][y] == self.board[loc - 1][y] == self.board[loc][y] \
+                        and self.board[loc][y] != 0:
                     return True
             return False
 
@@ -332,17 +334,19 @@ class Board:
         return vertical() or horizontal() or diagonal_1() or diagonal_2()
 
     def three_in_a_row(self, x, y):
-        block_pos = list()
+        block_pos = set()
 
         def vertical():
             is_three = False
             row = self.board[x]
             for loc in range(2, 7):
                 if row[loc - 2] == row[loc - 1] == row[loc] and row[loc] != 0:
-                    if self.valid_move_check(x, loc - 3):
-                        block_pos.append((x, loc - 3))
-                    if self.valid_move_check(x, loc + 1):
-                        block_pos.append((x, loc + 1))
+                    if self.valid_move_check(x, loc - 3) and self.cell_value(x, loc - 3) == 0 and -1 < x < 6 \
+                            and -1 < y < 7:
+                        block_pos.add((x, loc - 3))
+                    if self.valid_move_check(x, loc + 1) and self.cell_value(x, loc + 1) == 0 and -1 < x < 6 \
+                            and -1 < y < 7:
+                        block_pos.add((x, loc + 1))
                     is_three = True
 
             return is_three
@@ -351,12 +355,14 @@ class Board:
             is_three = False
             for loc in range(2, 6):
                 if self.board[loc - 2][y] == self.board[loc - 1][y] == self.board[loc][y] and self.board[loc][y] != 0:
-                    # print(f'CHECKING {loc - 3, y} if it a valid move')
-                    if self.valid_move_check(loc - 3, y):
+                    # print(f'Checking {loc - 3, y} if it a valid move')
+                    if self.valid_move_check(loc - 3, y) and self.cell_value(loc - 3, y) == 0 and -1 < x < 6\
+                            and -1 < y < 7:
                         # print(f'{loc - 3, y} IS VALID')
-                        block_pos.append((loc - 3, y))
-                    if self.valid_move_check(loc + 1, y):
-                        block_pos.append((loc + 1, y))
+                        block_pos.add((loc - 3, y))
+                    if self.valid_move_check(loc + 1, y) and self.cell_value(loc + 1, y) == 0 and -1 < x < 6\
+                            and -1 < y < 7:
+                        block_pos.add((loc + 1, y))
 
             return is_three
 
@@ -384,10 +390,12 @@ class Board:
             # 1, 1 = x down y down; 3, 3 = x up y up
             if count >= 3:
                 is_three = True
-                if self.valid_move_check(x_down - 1, y_down - 1):
-                    block_pos.append((x_down - 1, y_down - 1))
-                if self.valid_move_check(x_up + 1, y_up + 1):
-                    block_pos.append((x_up + 1, y_up + 1))
+                if self.valid_move_check(x_down - 1, y_down - 1) and self.cell_value(x_down - 1, y_down - 1) == 0 \
+                        and -1 < x < 6 and -1 < y < 7:
+                    block_pos.add((x_down - 1, y_down - 1))
+                if self.valid_move_check(x_up + 1, y_up + 1) and self.cell_value(x_up + 1, y_up + 1) == 0 \
+                        and -1 < x < 6 and -1 < y < 7:
+                    block_pos.add((x_up + 1, y_up + 1))
 
             return is_three
 
@@ -415,10 +423,12 @@ class Board:
             # 1, 1 = x down y down; 3, 3 = x up y up
             if count >= 3:
                 is_three = True
-                if self.valid_move_check(x_down - 1, y_up + 1):
-                    block_pos.append((x_down - 1, y_up + 1))
-                if self.valid_move_check(x_up + 1, y_down - 1):
-                    block_pos.append((x_up + 1, y_down - 1))
+                if self.valid_move_check(x_down - 1, y_up + 1) and self.cell_value(x_down - 1, y_up + 1) == 0 \
+                        and -1 < x < 6 and -1 < y < 7:
+                    block_pos.add((x_down - 1, y_up + 1))
+                if self.valid_move_check(x_up + 1, y_down - 1) and self.cell_value(x_up + 1, y_down - 1) == 0 \
+                        and -1 < x < 6 and -1 < y < 7:
+                    block_pos.add((x_up + 1, y_down - 1))
 
             return is_three
 
@@ -439,6 +449,25 @@ class RandomBot:
         return col
 
 
+class AdvancedBot:
+    def action(self, block_loc, win_loc):
+        # print(f'Block Loc: {block_loc} | Win_loc: {win_loc}')
+        if len(block_loc) >= 1 and np.random.random() < 0.8:  # Has an 80% Chance to block wins
+            location = tuple(block_loc)[0]
+            if location[1] not in list(BOARD.get_valid_moves()):
+                return random.choice(list(BOARD.get_valid_moves()))
+            return location[1]
+
+        elif len(win_loc) >= 1 and np.random.random() < 0.5:  # Has a 50% Chance to win games
+            location = tuple(win_loc)[0]
+            if location[1] not in list(BOARD.get_valid_moves()):
+                return random.choice(list(BOARD.get_valid_moves()))
+            return location[1]
+
+        else:  # If neither previous option is triggered, do this
+            return random.choice(list(BOARD.get_valid_moves()))
+
+
 class User:
     def action(self):
         """A method which allows the user to make a move"""
@@ -453,11 +482,11 @@ class Connect4Env:
     RETURN_IMAGES = True
 
     GAME_WIN_REWARD = 70_000
-    BLOCK_ENEMY_REWARD = 500
-    THREE_IN_A_ROW_REWARD = 30
+    BLOCK_ENEMY_REWARD = 3_000
+    THREE_IN_A_ROW_REWARD = 300
     MOVE_PENALTY = 1
     # All Below this comment will be turned negative
-    THREE_IN_A_ROW_PENALTY = 40_000
+    THREE_IN_A_ROW_PENALTY = 4_000
     GAME_DRAW_PENALTY = 60_000
     GAME_LOSS_PENALTY = 100_000
     ILLEGAL_MOVE_PENALTY = 500_000
@@ -480,14 +509,18 @@ class Connect4Env:
         self.episode_step = 0
         return BOARD.board_state()  # Return the current state (Which is empty)
 
-    def step(self, turn_action, user, block_loc):
+    def step(self, turn_action, user):
         # print(block_loc, user)
         if user == self.player_1[1]:  # Finds if this move was the 1st player or 2nd
             result = BOARD.drop(turn_action, self.player_1[0])  # 1 is the piece
+            add_spots = player_2_block_loc
+            remove_spots = player_1_block_loc
         else:
             result = BOARD.drop(turn_action, self.player_2[0])  # -1 is the piece
+            add_spots = player_1_block_loc
+            remove_spots = player_2_block_loc
 
-        # print(result)
+        add_spots.update(result[2])
         if result[0] == -2:
             move_reward = -self.GAME_DRAW_PENALTY  # Draw
         elif result[0] == -1:
@@ -496,9 +529,12 @@ class Connect4Env:
             move_reward = -self.GAME_LOSS_PENALTY
         elif result[0] == 1 and user == agent:  # Win
             move_reward = self.GAME_WIN_REWARD
-        elif (result[0] == 3 or result[0] == 2) and block_loc and result[1] not in block_loc:
+        elif (result[0] == 3 or result[0] == 2) and result[1] not in remove_spots and len(remove_spots) >= 1:
             # Failed to block 3 in a row
             move_reward = -self.THREE_IN_A_ROW_PENALTY
+        elif (result[0] == 3 or result[0] == 2) and result[1] in remove_spots:
+            remove_spots.remove(result[1])  # Blocked 3 in a row
+            move_reward = self.BLOCK_ENEMY_REWARD
         elif result[0] == 2 and user == agent:  # Agent 3 in a row
             move_reward = self.THREE_IN_A_ROW_REWARD
         else:
@@ -511,7 +547,7 @@ class Connect4Env:
             complete = False
 
         self.episode_step += 1
-        return np.array(BOARD.board_state()), move_reward, complete, result[2]
+        return np.array(BOARD.board_state()), move_reward, complete
 
 
 agent_training = str(
@@ -523,12 +559,15 @@ else:
         tf.keras.models.load_model(agent_training).get_weights())
 
 training_mode = str(input("Please give path to the model you wish to train against. If you wish to train against "
-                          "the random bot please enter 'RANDOM'. If you wish to manually train the bot please enter"
-                          " 'USER':  "))
+                          "the random bot please enter 'RANDOM'. If you wish to train against the advanced bot please "
+                          "enter 'ADVANCED'. If you wish to manually train the bot please enter 'USER':  "))
+
 if training_mode == 'RANDOM':
     bot = RandomBot()
 elif training_mode == 'USER':
     bot = User()
+elif training_mode == 'ADVANCED':
+    bot = AdvancedBot()
 else:
     bot = tf.keras.models.load_model(training_mode)
 
@@ -539,8 +578,8 @@ results = {70_000: 'Agent Win', 500: 'Block Enemy', 30: '3 in a row', -1: 'Move'
 
 ep_rewards = [0]
 
-if not os.path.isdir('models'):  # Creates model directory
-    os.makedirs('models')
+if not os.path.isdir(MODEL_NAME):  # Creates model directory
+    os.makedirs(MODEL_NAME)
 
 for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
     agent.tensorboard.step = episode
@@ -551,7 +590,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
     step = 1
     turn = 1
     done = False
-    last_block_loc = None
+    player_1_block_loc, player_2_block_loc = set(), set()
+    # Player 1 is the locations player 1 must block, and for 2 2 must block those spots
     last_reward = 0
     before_loss = [current_state, None, None]
 
@@ -563,9 +603,9 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
         players = {player_1: 'Bot', player_2: 'Agent'}
         player_turn = -1
-    #
-    # player_1, player_2, env.player_1[1], env.player_2[1] = bot, agent, bot, agent
-    # players = {player_1: 'USER', player_2: 'AGENT'}
+
+    player_1, player_2, env.player_1[1], env.player_2[1] = agent, bot, agent, bot
+    players = {player_1: 'AGENT', player_2: 'USER'}
     # print(players)
     while not done:
         if turn == 1:  # Odd Moves
@@ -574,16 +614,19 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
             if player_1 == agent:  # Agent goes 1st
                 if np.random.random() > epsilon:
                     action = agent.get_qs(current_state)
+                    # print(f'Action done: {action}')
                     q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
                               action[4]: 4, action[5]: 5, action[6]: 6}
+                    action[::-1].sort()
                     is_epsi = True
                 else:
                     action = random.choice(list(BOARD.get_valid_moves()))
                     is_epsi = False
-
+                # print(action, q_dict)
                 counter = 0
                 if is_epsi:  # epsilon gives a invalid move
                     while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
+                        # print(f'Counter is {counter}\nq_dict is {q_dict}\nAction is {action}\nBOARD moves is {BOARD.get_valid_moves()}')
                         # While we keep doing invalid moves, punish and find new input
                         agent.update_replay_memory((current_state, q_dict[action[counter]], -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
@@ -600,7 +643,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                     agent.train(done)
                     action = random.choice(list(BOARD.get_valid_moves()))
 
-                new_state, reward, done, last_block_loc = env.step(action, agent, last_block_loc)
+                new_state, reward, done = env.step(action, agent)
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
@@ -614,23 +657,30 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 agent.train(done)
 
             else:  # Bot goes 1st
-                if training_mode == 'RANDOM' or training_mode == 'USER':
-                    action = bot.action()
+                if training_mode == 'RANDOM' or training_mode == 'USER' or training_mode == 'ADVANCED':
+                    if training_mode == 'ADVANCED':
+                        action = bot.action(player_1_block_loc, player_2_block_loc)
+                    else:
+                        action = bot.action()
                 else:
-                    action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
-                    if action not in BOARD.get_valid_moves():
+                    if np.random.random() > 0.5:
+                        action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
+                        if action not in BOARD.get_valid_moves():
+                            action = random.choice(list(BOARD.get_valid_moves()))
+                    else:
                         action = random.choice(list(BOARD.get_valid_moves()))
 
-                new_state, reward, done, last_block_loc = env.step(action, bot, last_block_loc)
-
+                new_state, reward, done = env.step(action, bot)
                 if reward == -env.GAME_LOSS_PENALTY:
                     agent.update_replay_memory((last_player_state, last_move, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
                     agent.train(done)
+                    episode_reward += reward
                 elif reward == -env.GAME_DRAW_PENALTY:
                     agent.update_replay_memory((last_player_state, last_move, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
                     agent.train(done)
+                    episode_reward += reward
 
                 last_reward = reward
                 if type(action) == np.ndarray:
@@ -643,9 +693,10 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
             if player_2 == agent:  # Agent goes 2nd
                 if np.random.random() > epsilon:
                     action = agent.get_qs(current_state)
-
+                    # print(f'Action done: {action}')
                     q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
                               action[4]: 4, action[5]: 5, action[6]: 6}
+                    action[::-1].sort()
                     is_epsi = True
                 else:
                     action = random.choice(list(BOARD.get_valid_moves()))
@@ -668,8 +719,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                                                 current_state, done))
                     action = random.choice(list(BOARD.get_valid_moves()))
                     agent.train(done)
-
-                new_state, reward, done, last_block_loc = env.step(action, agent, last_block_loc)
+                print(action)
+                new_state, reward, done = env.step(action, agent)
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
                 episode_reward += reward
@@ -683,23 +734,30 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 agent.train(done)
 
             else:  # Bot goes 2nd
-                if training_mode == 'RANDOM' or training_mode == 'USER':
-                    action = bot.action()
+                if training_mode == 'RANDOM' or training_mode == 'USER' or training_mode == 'ADVANCED':
+                    if training_mode == 'ADVANCED':
+                        action = bot.action(player_2_block_loc, player_1_block_loc)
+                    else:
+                        action = bot.action()
                 else:
-                    action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
-                    if action not in BOARD.get_valid_moves():
+                    if np.random.random() > 0.5:
+                        action = np.argmax(bot.predict(current_state.reshape((1, 6, 7, 1))))
+                        if action not in BOARD.get_valid_moves():
+                            action = random.choice(list(BOARD.get_valid_moves()))
+                    else:
                         action = random.choice(list(BOARD.get_valid_moves()))
-                new_state, reward, done, last_block_loc = env.step(action, bot, last_block_loc)
 
+                new_state, reward, done = env.step(action, bot)
                 if reward == -env.GAME_LOSS_PENALTY:
                     agent.update_replay_memory((last_player_state, last_move, -env.GAME_LOSS_PENALTY,
                                                 new_state, done))
                     agent.train(done)
+                    episode_reward += reward
                 elif reward == -env.GAME_DRAW_PENALTY:
                     agent.update_replay_memory((last_player_state, last_move, -env.GAME_DRAW_PENALTY,
                                                 new_state, done))
                     agent.train(done)
-
+                    episode_reward += reward
                 last_reward = reward
                 if type(action) == np.ndarray:
                     print(f'Bot Spot 2 action: {action}\nCurrent State:\n{BOARD}\n'
@@ -711,7 +769,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         current_state = new_state
         step += 1
         # print(f'\n{BOARD}')
-        print(f'Current Move Reward {reward}')
+        # print(f'Current Move Reward {reward}')
+        # print(f'Rolling reward count {episode_reward}')
     # Printing episode results
     print(f'Episode #{episode}, Result: {results[reward]}\nReward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
 
@@ -724,8 +783,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                                        reward_max=max_reward, epsilon=epsilon)
 
         if min_reward >= MIN_REWARD:
-            agent.model.save(f'models/{MODEL_NAME}__{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
-                             f'avg_{min_reward:_>7.2f}min__{int(time.time())}.model')
+            agent.model.save(f'{MODEL_NAME}/{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
+                             f'avg_{min_reward:_>7.2f}min__episode_{int(episode)}.model')
 
         if epsilon > MIN_EPSILON:
             epsilon *= EPSILON_DECAY
