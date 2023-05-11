@@ -1,7 +1,7 @@
 import tensorflow as tf
 import numpy as np
 from keras.models import Sequential
-from keras.layers import Dense, Dropout, Conv2D, Flatten, InputLayer, MaxPooling2D
+from keras.layers import Dense, Dropout, Conv2D, Flatten, InputLayer, MaxPooling2D, Concatenate, Input
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
 
@@ -10,14 +10,15 @@ import random
 import os
 import time
 
+from keras.regularizers import l2
 from tqdm import tqdm
 
 tester = False
 REPLAY_MEMORY_SIZE = 10_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = 'V12-256x2'
+MODEL_NAME = 'V16-256x2'
 MINIBATCH_SIZE = 64
-DISCOUNT = 0.99
+DISCOUNT = 0.6
 UPDATE_TARGET_EVERY = 5
 
 MIN_REWARD = -20_000
@@ -29,7 +30,7 @@ EPSILON_DECAY = 0.950
 MIN_EPSILON = 0.001
 
 LOWER_DECAY = 50
-AGGREGATE_STATS_EVERY = 200
+AGGREGATE_STATS_EVERY = 50
 
 
 class DQNAgent:
@@ -44,33 +45,37 @@ class DQNAgent:
 
         self.target_update_counter = 0
 
+        print(self.model.summary())
+
         if weights:
             self.model.set_weights(weights)
             self.target_model.set_weights(weights)
 
     def create_model(self):
         """Creates both the target model and the main model"""
+
         model = Sequential()
         model.add(InputLayer(input_shape=(6, 7, 1)))  # Dimension of the 2d list with 1 for greyscale
 
-        model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
+        model.add(Conv2D(32, (5, 5), activation='relu', padding='same', kernel_regularizer=l2(0.01)))
         # model.add(MaxPooling2D(2, 2))
-        # model.add(Dropout(0.2))
+        model.add(Dropout(0.5))
 
-        model.add(Conv2D(32, (3, 3), activation='relu', padding='same'))
-        model.add(MaxPooling2D(2, 2))
-        # model.add(Dropout(0.2))
+        # model.add(Conv2D(32, (3, 3), activation='relu', padding='same', kernel_regularizer=l2(0.01)))
+        # model.add(MaxPooling2D(2, 2))
+        # model.add(Dropout(0.5))
 
         # model.add(Conv2D(16, (3, 3), activation='relu', padding='same'))
         # model.add(Dropout(0.2))
 
+        # Define the single number input layer
         model.add(Flatten())
-        model.add(Dense(256, activation='relu'))
-        model.add(Dropout(0.2))
-        model.add(Dense(128, activation='relu'))
-        model.add(Dropout(0.2))
+        model.add(Dense(256, activation='relu', kernel_regularizer=l2(0.01)))
+        model.add(Dropout(0.5))
+        model.add(Dense(128, activation='relu', kernel_regularizer=l2(0.01)))
+        model.add(Dropout(0.5))
         model.add(Dense(7, activation='softmax'))
-        model.compile(loss='mse', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
+        model.compile(loss='categorical_crossentropy', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
         return model
 
     def update_replay_memory(self, transition):
@@ -228,8 +233,8 @@ class Board:
             if self.board[0][col] != 0:
                 self.valid_cols.remove(col)
                 return True
-        except TypeError:
-            print(f'New State: {new_state}\nReward: {reward}\nDone: {done}')
+        except KeyError:
+            return True
         return False
 
     def drop(self, col, player_id):
@@ -264,8 +269,10 @@ class Board:
 
         self.board[safe_row][col] = player_id  # Turn that spot for the player
         three_in_a_row = self.three_in_a_row(safe_row, col)
+
         if safe_row == 0:  # Removes columns as they are filled
             self.valid_cols.remove(col)
+
         self.size += 1  # Increase the piece count
 
         # Game is over
@@ -520,19 +527,15 @@ class AdvancedBot:
             location = tuple(block_loc)[0]
             if location[1] not in list(BOARD.get_valid_moves()):
                 return random.choice(list(BOARD.get_valid_moves()))
-            action = location[1]
+            return location[1]
         elif len(win_loc) >= 1 and np.random.random() < 0.1:  # Has a 50% Chance to win games
             # print('NOW WINNING')
             location = tuple(win_loc)[0]
             if location[1] not in list(BOARD.get_valid_moves()):
-                action = random.choice(moves)
-            else:
-                action = location[1]
+                return random.choice(list(BOARD.get_valid_moves()))
+            return location[1]
         else:  # If neither previous option is triggered, do this
-            action = random.choice(moves)
-
-        # print(f'Action taken was {action}')
-        return action
+            return random.choice(moves)
 
 
 class User:
@@ -551,8 +554,8 @@ class Connect4Env:
     GAME_WIN_REWARD = 50_000
     BLOCK_ENEMY_REWARD = 3_000
     THREE_IN_A_ROW_REWARD = 500
-    MOVE_PENALTY = 1
     # All Below this comment will be turned negative
+    MOVE_PENALTY = 1
     THREE_IN_A_ROW_PENALTY = 5_000
     GAME_DRAW_PENALTY = 30_000
     GAME_LOSS_PENALTY = 70_000
@@ -698,7 +701,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 # print(action, q_dict)
                 counter = 0
                 if is_epsi:  # epsilon gives a invalid move
-                    while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
+                    while counter < len(q_dict) and q_dict[action[counter]] not in BOARD.get_valid_moves():
                         # print(f'Counter is {counter}\nq_dict is {q_dict}\nAction is {action}\nBOARD moves is {BOARD.get_valid_moves()}')
                         # While we keep doing invalid moves, punish and find new input
                         agent.update_replay_memory((current_state, q_dict[action[counter]], -env.ILLEGAL_MOVE_PENALTY,
@@ -716,6 +719,10 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                                                 current_state, done))
                     agent.train(done)
                     action = random.choice(list(BOARD.get_valid_moves()))
+
+                if type(action) == list(): # Fixing a bug
+                    action = action[0].split('. ')
+                    action = action.index('1')
 
                 new_state, reward, done = env.step(action, agent)
 
@@ -788,7 +795,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                 counter = 0
                 if is_epsi:  # epsilon gives a invalid move
-                    while counter < 7 and q_dict[action[counter]] not in BOARD.get_valid_moves():
+                    while counter < len(q_dict) and q_dict[action[counter]] not in BOARD.get_valid_moves():
                         # While we keep doing invalid moves, punish and find new input
                         agent.update_replay_memory((current_state, q_dict[action[counter]], -env.ILLEGAL_MOVE_PENALTY,
                                                     current_state, done))
@@ -805,6 +812,11 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                     action = random.choice(list(BOARD.get_valid_moves()))
                     agent.train(done)
                 # print(action)
+
+                if type(action) == list(): # Fixing a bug
+                    action = action[0].split('. ')
+                    action = action.index('1')
+
                 new_state, reward, done = env.step(action, agent)
 
                 before_loss[0], before_loss[1], before_loss[2] = current_state, action, new_state
@@ -884,7 +896,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         # agent.model.save(f'{MODEL_NAME}/{max_reward:_>7.2f}max_{average_reward:_>7.2f}'
         #                  f'avg_{min_reward:_>7.2f}min__episode_{int(episode)}.model')
 
-        agent.model.save(f'{MODEL_NAME}/EPISODE_{episode}___EPISODE_REWARD_{episode_reward}')
+        agent.model.save(f'{MODEL_NAME}/EPISODE_{episode}___AVG_EPISODE_REWARD_{average_reward:_>7.2f}_TRAINING_1')
 
     if not episode % LOWER_DECAY or episode == 1:
         if epsilon > MIN_EPSILON:
