@@ -18,17 +18,17 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 tester = False
-REPLAY_MEMORY_SIZE = 30_000
+REPLAY_MEMORY_SIZE = 10_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = 'V24-256x2'
+MODEL_NAME = 'V26-256x2'
 MINIBATCH_SIZE = 64
-DISCOUNT = 0.85
-UPDATE_TARGET_EVERY = 50
+DISCOUNT = 1
+UPDATE_TARGET_EVERY = 200
 
-EPISODES = 2000
+EPISODES = 10_000
 
 epsilon = 1
-EPSILON_DECAY = 0.997
+EPSILON_DECAY = 0.9995
 MIN_EPSILON = 0.001
 
 LOWER_DECAY = 50
@@ -70,6 +70,7 @@ class DQNAgent:
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
+        model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
 
         # model.add(Dense(256, activation='relu', kernel_regularizer=l2(0.01)))
         # model.add(Dropout(0.5))
@@ -100,6 +101,11 @@ class DQNAgent:
     def update_replay_memory(self, transition):
         """Updates replay memory"""
         self.replay_memory.append(transition)
+
+    def compute_loss(logits, actions, rewards):
+        neg_logprob = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=actions)
+        loss = tf.reduce_mean(neg_logprob * rewards)
+        return loss
 
     def get_qs(self, state):
         return self.model.predict(np.array(state).reshape(-1, *state.shape))[0]
@@ -137,6 +143,9 @@ class DQNAgent:
             current_qs = current_qs_list[index]
             current_qs[action] = new_q
 
+            # print(f"Sample {index}: Current Q-values = {current_qs_list[index]}")
+            # print(f"Sample {index}: New Q-values = {current_qs}")
+
             X.append(current_state)
             y.append(current_qs)
 
@@ -144,12 +153,13 @@ class DQNAgent:
                        callbacks=[self.tensorboard] if terminal_state else None)
 
         # Updating to determine if it is time to update target model
-        if terminal_state:
-            self.target_update_counter += 1
+
+        self.target_update_counter += 1
 
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
+
 
 
 class ModifiedTensorBoard(TensorBoard):
@@ -596,7 +606,7 @@ class Connect4Env:
     SIZE_COLUMNS = 7
     RETURN_IMAGES = True
 
-    GAME_WIN_REWARD_H = 20
+    GAME_WIN_REWARD_H = 10
     GAME_WIN_REWARD_V = 70
     GAME_WIN_REWARD_D = 100
 
@@ -605,10 +615,10 @@ class Connect4Env:
     # All Below this comment will be turned negative
     MOVE_PENALTY = 0
     THREE_IN_A_ROW_PENALTY = 7
-    WIN_MISSED_PENALTY = 10
-    GAME_DRAW_PENALTY = 40
-    GAME_LOSS_PENALTY = 50
-    ILLEGAL_MOVE_PENALTY = 10_000
+    WIN_MISSED_PENALTY = 20
+    GAME_DRAW_PENALTY = 50
+    GAME_LOSS_PENALTY = 70
+    # ILLEGAL_MOVE_PENALTY = 10_000
 
     OBSERVATION_SPACE_VALUES = (SIZE_COLUMNS, SIZE_ROWS, 3)
     ACTION_SPACE_SIZE = 7
@@ -678,9 +688,9 @@ class Connect4Env:
             remove_spots.remove(move)
             move_reward = self.BLOCK_ENEMY_REWARD
 
-        elif move_result == 2:
-            # Agent 3 in a row
-            move_reward = self.THREE_IN_A_ROW_REWARD
+        # elif move_result == 2:
+        #     # Agent 3 in a row
+        #     move_reward = self.THREE_IN_A_ROW_REWARD
 
         else:
             # Basic move
@@ -710,7 +720,7 @@ class Connect4Env:
 agent_training = str(
     input("Please give the path to the model you want to train, or write 'NEW' if you wish to train a new model. For "
           "Testing input 'USER':  "))
-optimal_percent = int(input('Please give the percent you want the agent to make optimal moves when random is selected '
+optimal_percent = float(input('Please give the percent you want the agent to make optimal moves when random is selected '
                             '(.87 = 87%): '))
 if agent_training == 'NEW':
     agent = DQNAgent()
@@ -729,8 +739,8 @@ if training_mode == 'RANDOM':
 elif training_mode == 'USER':
     bot = User()
 elif training_mode == 'ADVANCED':
-    winning_percentage = int(input('Please put the percentage of times you want the bot to win (.87 = 87%): '))
-    blocking_percentage = int(input('Please put the percentage of times you want the bot to block (.87 = 87%): '))
+    winning_percentage = float(input('Please put the percentage of times you want the bot to win (.87 = 87%): '))
+    blocking_percentage = float(input('Please put the percentage of times you want the bot to block (.87 = 87%): '))
     bot = AdvancedBot(winning_percentage, blocking_percentage)
 else:
     bot = tf.keras.models.load_model(training_mode)
@@ -746,9 +756,10 @@ results = {env.GAME_WIN_REWARD_H: 'Agent Win H',
            -env.THREE_IN_A_ROW_PENALTY: 'Unblocked 3 in a row',
            -env.WIN_MISSED_PENALTY: 'Win Was Missed',
            -env.GAME_DRAW_PENALTY: 'Draw',
-           -env.GAME_LOSS_PENALTY: 'Bot Win',
-           -env.ILLEGAL_MOVE_PENALTY: 'Illegal Move'
+           -env.GAME_LOSS_PENALTY: 'Bot Win'
            }
+
+# -env.ILLEGAL_MOVE_PENALTY: 'Illegal Move'
 
 ep_rewards_agent = []
 ep_rewards_bot = []
@@ -762,9 +773,10 @@ specific_rewards = {
     -env.THREE_IN_A_ROW_PENALTY: [0, 0],
     -env.WIN_MISSED_PENALTY: [0, 0],
     -env.GAME_DRAW_PENALTY: [0, 0],
-    -env.GAME_LOSS_PENALTY: [0, 0],
-    -env.ILLEGAL_MOVE_PENALTY: [0, 0]
+    -env.GAME_LOSS_PENALTY: [0, 0]
 }
+
+# -env.ILLEGAL_MOVE_PENALTY: [0, 0]
 
 if not os.path.isdir(MODEL_NAME):  # Creates model directory
     os.makedirs(MODEL_NAME)
@@ -848,22 +860,22 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                         if action not in BOARD.get_valid_moves():
                             # While we keep doing invalid moves, punish and find new input
 
-                            agent.update_replay_memory(
-                                (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                                 current_state, done))
-                            agent.train(done)
-                            episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
+                            # agent.update_replay_memory(
+                            #     (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                            #      current_state, done))
+                            # agent.train(done)
+                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
+                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
                             action = random.choice(list(BOARD.get_valid_moves()))  # Assigning action its index/col
 
                     elif action not in BOARD.get_valid_moves():  # Random move is invalid
                         # print('Random Move')
-                        agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                                                    current_state, done))
-                        agent.train(done)
+                        # agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                        #                             current_state, done))
+                        # agent.train(done)
                         action = random.choice(list(BOARD.get_valid_moves()))
-                        episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                        specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
+                        # episode_reward -= env.ILLEGAL_MOVE_PENALTY
+                        # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
 
                 new_state, reward, done = env.step(action, agent)
 
@@ -940,7 +952,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                         is_epsi = True
                         action = np.argmax(agent.get_qs(current_state))
                     else:  # Not a epsilon move
-                        if np.random.random() > .5:  # Do a totally random move
+                        if np.random.random() > optimal_percent:  # Do a totally random move
                             action = random.choice(list(BOARD.get_valid_moves()))
 
                         else:
@@ -948,7 +960,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                             # totally random
                             optimal_moves = len(player_1_block_loc) + len(player_2_block_loc)
 
-                            if optimal_moves < optimal_percent:  # If there is a better move do it
+                            if optimal_moves > 0:  # If there is a better move do it
                                 if len(player_2_block_loc) > 0:  # Move is getting a win
                                     action = random.choice(list(player_2_block_loc))[1]
                                 else:  # Move is blocking a win
@@ -964,24 +976,24 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                         if action not in BOARD.get_valid_moves():
                             # While we keep doing invalid moves, punish and find new input
                             # print('Random Move')
-
-                            agent.update_replay_memory(
-                                (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                                 current_state, done))
-                            agent.train(done)
-                            episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
+                            #
+                            # agent.update_replay_memory(
+                            #     (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                            #      current_state, done))
+                            # agent.train(done)
+                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
+                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
                             action = random.choice(list(BOARD.get_valid_moves()))
 
                     elif action not in BOARD.get_valid_moves():  # Random move is invalid
 
                         if agent_training != 'USER':
-                            agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                                                        current_state, done))
+                            # agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
+                            #                             current_state, done))
                             action = random.choice(list(BOARD.get_valid_moves()))
-                            agent.train(done)
-                            episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
+                            # agent.train(done)
+                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
+                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
 
                 new_state, reward, done = env.step(action, agent)
 
@@ -1073,7 +1085,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
     ep_rewards_agent.append(episode_reward)
     # ep_rewards_bot.append(reward)
 
-    print(f'Episode #{episode}, Result: {results[reward]}\nReward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
+    print(f'Episode #{episode}, Winner: {winner}, Result: {results[reward]}\nReward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
     counting[winner] += 1
     print(reward_sum)
 
@@ -1086,7 +1098,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         #                                    reward_max=max_reward, epsilon=epsilon)
 
         agent.model.save(
-            f'{MODEL_NAME}/EPISODE_{episode+6000}___AVG_EPISODE_REWARD_{average_reward:_>7.2f}_TRAINING_1')
+            f'{MODEL_NAME}/EPISODE_{episode}___AVG_EPISODE_REWARD_{average_reward:_>7.2f}_TRAINING_1')
 
     # if not episode % LOWER_DECAY or episode == 1:
     #     if epsilon > MIN_EPSILON:
