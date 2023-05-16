@@ -1,34 +1,32 @@
 import tensorflow as tf
 import numpy as np
 from keras import Sequential
-from keras.layers import Dense, Dropout, Conv2D, Flatten, InputLayer, MaxPooling2D, Concatenate, Input, TimeDistributed, \
-    LSTM
+from keras.layers import Dense, Flatten, InputLayer
+from keras.regularizers import l2
 from keras.callbacks import TensorBoard
 from keras.optimizers import Adam
-from keras.models import Model
+
+import matplotlib.pyplot as plt
+
+from tqdm import tqdm
 
 from collections import deque
 import random
 import os
 import time
 
-from keras.regularizers import l2
-from tqdm import tqdm
 
-import matplotlib.pyplot as plt
-
-tester = False
 REPLAY_MEMORY_SIZE = 10_000
 MIN_REPLAY_MEMORY_SIZE = 1_000
-MODEL_NAME = 'V26-256x2'
+MODEL_NAME = 'V28-256x2'
 MINIBATCH_SIZE = 64
 DISCOUNT = 1
 UPDATE_TARGET_EVERY = 200
 
-EPISODES = 10_000
+EPISODES = 100_000
 
 epsilon = 1
-EPSILON_DECAY = 0.9995
+EPSILON_DECAY = 0.99923276611
 MIN_EPSILON = 0.001
 
 LOWER_DECAY = 50
@@ -46,8 +44,7 @@ class DQNAgent:
         self.tensorboard = ModifiedTensorBoard(log_dir=f'logs/{MODEL_NAME}-{int(time.time())}')
 
         self.target_update_counter = 0
-
-        # print(self.model.summary())
+        self.optimizer = Adam(learning_rate=0.0001)
 
         if weights:
             self.model.set_weights(weights)
@@ -57,12 +54,10 @@ class DQNAgent:
         """Creates both the target model and the main model"""
 
         model = Sequential()
+        # Define the single number input layer
+
         model.add(InputLayer(input_shape=(6, 7, 1)))  # Dimension of the 2d list with 1 for greyscale
 
-        # model.add(Conv2D(32, (5, 5), activation='relu', padding='same', kernel_regularizer=l2(0.01)))
-        # model.add(Dropout(0.5))
-
-        # Define the single number input layer
         model.add(Flatten())
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
@@ -72,94 +67,46 @@ class DQNAgent:
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
         model.add(Dense(50, activation='relu', kernel_regularizer=l2(0.01)))
 
-        # model.add(Dense(256, activation='relu', kernel_regularizer=l2(0.01)))
-        # model.add(Dropout(0.5))
-        # model.add(Dense(256, activation='relu', kernel_regularizer=l2(0.01)))
-
-        # model.add(Dense(128, activation='relu', kernel_regularizer=l2(0.01)))
-        # model.add(Dropout(0.5))
-        # model.add(Dense(128, activation='relu', kernel_regularizer=l2(0.01)))
         model.add(Dense(7, activation='softmax'))
-        model.compile(loss='mse', optimizer=Adam(learning_rate=0.001), metrics=['accuracy'])
-
-        # input = Input((6, 7, 1))
-        # hidden_1 = Conv2D(32, (5, 5), activation='relu', padding='same', kernel_regularizer=l2(0.01))(input)
-        # hidden_2 = Dropout(0.5)(hidden_1)
-        # hidden_3 = Flatten()(hidden_2)
-        # hidden_4 = Dense(400, activation='relu', kernel_regularizer=l2(0.01))(hidden_3)
-        # hidden_5 = Dropout(0.5)(hidden_4)
-        # hidden_6 = Dense(200, activation='relu', kernel_regularizer=l2(0.01))(hidden_5)
-        # hidden_7 = Dropout(0.5)(hidden_6)
-        # hidden_8 = Dense(100, activation='relu', kernel_regularizer=l2(0.01))(hidden_7)
-        # hidden_9 = Dropout(0.5)(hidden_8)
-        # hidden_10 = Dense(50, activation='relu', kernel_regularizer=l2(0.01))(hidden_9)
-        # output = Dense(7, activation='softmax', kernel_regularizer=l2(0.01))(hidden_10)
-        # model = Model(inputs=[input], outputs=[output])
-
         return model
 
     def update_replay_memory(self, transition):
         """Updates replay memory"""
         self.replay_memory.append(transition)
 
-    def compute_loss(logits, actions, rewards):
+    def compute_loss(self, logits, actions, rewards):
+        """Get the loss for this batch"""
         neg_logprob = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=actions)
         loss = tf.reduce_mean(neg_logprob * rewards)
         return loss
 
     def get_qs(self, state):
+        """Get a prediction from the agent"""
         return self.model.predict(np.array(state).reshape(-1, *state.shape))[0]
 
-    def train(self, terminal_state):
+    def train(self):
+        """Train the agent"""
         if len(self.replay_memory) < MIN_REPLAY_MEMORY_SIZE:  # Do not train if small sample size
             return
 
         minibatch = random.sample(self.replay_memory, MINIBATCH_SIZE)
 
         current_states = np.array([transition[0] for transition in minibatch])
+        current_actions = np.array([transition[1] for transition in minibatch])
+        current_rewards = np.array([transition[2] for transition in minibatch])
 
-        current_qs_list = self.model.predict(current_states)
-
-        new_current_states = np.array([transition[3] for transition in minibatch])
-        future_qs_list = self.target_model.predict(new_current_states)
-
-        # for sample in range(len(minibatch)):
-        #     print(f'Current Sample is #{sample}\n'
-        #           f'Minibatch Sample is:\n{minibatch[sample]}\n'
-        #           f'Current State is:\n{current_states[sample]}\n'
-        #           f'Current QS List is:\n{current_qs_list[sample]}\n'
-        #           f'New_current_states is:\n{new_current_states[sample]}\n'
-        #           f'Future QS List is:\n{future_qs_list[sample]}\n')
-
-        X, y = list(), list()
-
-        for index, (current_state, action, reward, new_current_state, done) in enumerate(minibatch):
-            if not done:  # episode incomplete
-                max_future_q = np.max(future_qs_list[index])
-                new_q = reward + DISCOUNT * max_future_q
-            else:
-                new_q = reward
-
-            current_qs = current_qs_list[index]
-            current_qs[action] = new_q
-
-            # print(f"Sample {index}: Current Q-values = {current_qs_list[index]}")
-            # print(f"Sample {index}: New Q-values = {current_qs}")
-
-            X.append(current_state)
-            y.append(current_qs)
-
-        self.model.fit(np.array(X) / 255, np.array(y), batch_size=MINIBATCH_SIZE, verbose=0, shuffle=False,
-                       callbacks=[self.tensorboard] if terminal_state else None)
-
-        # Updating to determine if it is time to update target model
+        with tf.GradientTape() as tape:
+            logits = self.model(current_states)
+            loss = self.compute_loss(logits, current_actions, current_rewards)
+            grads = tape.gradient(loss, self.model.trainable_variables)
+            grads_and_vars = zip(grads, self.model.trainable_variables)
+            self.optimizer.apply_gradients(grads_and_vars=grads_and_vars)
 
         self.target_update_counter += 1
 
         if self.target_update_counter > UPDATE_TARGET_EVERY:
             self.target_model.set_weights(self.model.get_weights())
             self.target_update_counter = 0
-
 
 
 class ModifiedTensorBoard(TensorBoard):
@@ -211,6 +158,7 @@ class Board:
         self.valid_cols = {x for x in range(7)}
 
     def clear(self):
+        """Reset the game state"""
         self.board = [
             [0, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0],
@@ -248,6 +196,7 @@ class Board:
         return self.board[x][y]
 
     def get_valid_moves(self):
+        """Return a column of valid moves"""
         return self.valid_cols
 
     def board_state(self):
@@ -330,6 +279,7 @@ class Board:
             return 3, (safe_row, col), block_loc, (to_block_player, to_block_opponent)
 
     def four_in_a_row(self, x, y):
+        """Check if any winners were found, if so return True and how"""
         def vertical():
             row = self.board[x]
             for loc in range(3, 7):
@@ -577,6 +527,7 @@ class AdvancedBot:
         self.blocking = blocking
 
     def action(self, block_loc, win_loc):
+        """Function which makes bots moves"""
         action = 0
         moves = list(BOARD.get_valid_moves())
         if len(block_loc) >= 1 and np.random.random() < self.blocking:  # Has an 80% Chance to block wins
@@ -591,6 +542,18 @@ class AdvancedBot:
             return location[1]
         else:  # If neither previous option is triggered, do this
             return random.choice(moves)
+
+    def update_training(self):
+        """A function used to increase bots odd of making good moves"""
+        self.winning += .2
+        self.blocking += .2
+
+        if self.winning > .9:
+            self.winning = .9
+
+        if self.blocking > .9:
+            self.blocking = .9
+
 
 
 class User:
@@ -660,14 +623,13 @@ class Connect4Env:
         if move_result == -2:
             move_reward = -self.GAME_DRAW_PENALTY  # Draw
 
-        # elif move_result == -1:
-        #     move_reward = -self.ILLEGAL_MOVE_PENALTY  # Illegal Move || THIS CODE SHOULD NEVER BE REACHED
-
         elif move_result == 1:  # Win
             if result[3] == 'H':
                 move_reward = self.GAME_WIN_REWARD_H
+
             elif result[3] == 'V':
                 move_reward = self.GAME_WIN_REWARD_V
+
             else:
                 move_reward = self.GAME_WIN_REWARD_D
 
@@ -688,9 +650,9 @@ class Connect4Env:
             remove_spots.remove(move)
             move_reward = self.BLOCK_ENEMY_REWARD
 
-        # elif move_result == 2:
-        #     # Agent 3 in a row
-        #     move_reward = self.THREE_IN_A_ROW_REWARD
+        elif move_result == 2:
+            # Agent 3 in a row
+            move_reward = self.THREE_IN_A_ROW_REWARD
 
         else:
             # Basic move
@@ -720,8 +682,9 @@ class Connect4Env:
 agent_training = str(
     input("Please give the path to the model you want to train, or write 'NEW' if you wish to train a new model. For "
           "Testing input 'USER':  "))
-optimal_percent = float(input('Please give the percent you want the agent to make optimal moves when random is selected '
-                            '(.87 = 87%): '))
+optimal_percent = float(
+    input('Please give the percent you want the agent to make optimal moves when random is selected '
+          '(.87 = 87%): '))
 if agent_training == 'NEW':
     agent = DQNAgent()
 elif agent_training == 'USER':
@@ -759,8 +722,6 @@ results = {env.GAME_WIN_REWARD_H: 'Agent Win H',
            -env.GAME_LOSS_PENALTY: 'Bot Win'
            }
 
-# -env.ILLEGAL_MOVE_PENALTY: 'Illegal Move'
-
 ep_rewards_agent = []
 ep_rewards_bot = []
 specific_rewards = {
@@ -775,8 +736,6 @@ specific_rewards = {
     -env.GAME_DRAW_PENALTY: [0, 0],
     -env.GAME_LOSS_PENALTY: [0, 0]
 }
-
-# -env.ILLEGAL_MOVE_PENALTY: [0, 0]
 
 if not os.path.isdir(MODEL_NAME):  # Creates model directory
     os.makedirs(MODEL_NAME)
@@ -812,27 +771,16 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         players = {player_1: 'Bot', player_2: 'Agent'}
         player_turn = -1
 
-    # player_1, player_2, env.player_1[1], env.player_2[1] = agent, bot, agent, bot
-    # players = {player_1: 'AGENT', player_2: 'USER'}
-    # print(players)
-    # print(player_turn)
-
     while not done:
 
         if turn == 1:  # Odd Moves
             player = players[player_1]
-            q_dict = dict()
             if player_1 == agent:  # Agent goes 1st
                 if agent_training == 'USER':  # For testing
                     action = agent.action()
 
                 else:
                     if np.random.random() > epsilon:
-                        # print(agent.get_qs(current_state))
-                        # action = agent.get_qs(current_state)
-                        # q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
-                        #           action[4]: 4, action[5]: 5, action[6]: 6}
-                        # action[::-1].sort()
                         is_epsi = True
                         action = np.argmax(agent.get_qs(current_state))
                     else:  # Not a epsilon move
@@ -858,24 +806,11 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                     if is_epsi:  # epsilon gives a invalid move
 
                         if action not in BOARD.get_valid_moves():
-                            # While we keep doing invalid moves, punish and find new input
-
-                            # agent.update_replay_memory(
-                            #     (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                            #      current_state, done))
-                            # agent.train(done)
-                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
+                            # While we keep doing invalid moves find new input
                             action = random.choice(list(BOARD.get_valid_moves()))  # Assigning action its index/col
 
                     elif action not in BOARD.get_valid_moves():  # Random move is invalid
-                        # print('Random Move')
-                        # agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                        #                             current_state, done))
-                        # agent.train(done)
                         action = random.choice(list(BOARD.get_valid_moves()))
-                        # episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                        # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
 
                 new_state, reward, done = env.step(action, agent)
 
@@ -885,8 +820,7 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 last_move = action
 
                 if agent_training != 'USER':
-                    agent.update_replay_memory((current_state, last_move, reward, new_state, done))
-                    agent.train(done)
+                    agent.update_replay_memory((current_state, last_move, reward))
 
                 if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                         reward == env.GAME_WIN_REWARD_D:
@@ -916,16 +850,15 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                     if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                             reward == env.GAME_WIN_REWARD_D:
                         agent.update_replay_memory(
-                            (last_player_state, last_move, -env.GAME_LOSS_PENALTY, new_state, done))
-                        agent.update_replay_memory((current_state, action, reward, new_state, done))
-                        agent.train(done)
+                            (last_player_state, last_move, -env.GAME_LOSS_PENALTY))
+                        agent.update_replay_memory((current_state, last_move, reward))
+                        agent.train()
                         episode_reward -= env.GAME_LOSS_PENALTY
 
-                    else:
-                        agent.update_replay_memory((current_state, last_move, reward, new_state, done))
-                        if reward == -env.GAME_DRAW_PENALTY:
-                            episode_reward -= env.GAME_DRAW_PENALTY
-                        agent.train(done)
+                    agent.update_replay_memory((current_state, last_move, reward))
+                    if reward == -env.GAME_DRAW_PENALTY:
+                        episode_reward -= env.GAME_DRAW_PENALTY
+                    agent.train()
 
                 if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                         reward == env.GAME_WIN_REWARD_D:
@@ -943,7 +876,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                 else:
                     if np.random.random() > epsilon:
-                        # print(agent.get_qs(current_state))
+                        # print(f'Current State is\n {current_state}')
+                        # print(f'\nThe prediciton is:\n{agent.get_qs(current_state)}')
 
                         # action = agent.get_qs(current_state)
                         # q_dict = {action[0]: 0, action[1]: 1, action[2]: 2, action[3]: 3,
@@ -975,25 +909,12 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
 
                         if action not in BOARD.get_valid_moves():
                             # While we keep doing invalid moves, punish and find new input
-                            # print('Random Move')
-                            #
-                            # agent.update_replay_memory(
-                            #     (current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                            #      current_state, done))
-                            # agent.train(done)
-                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
                             action = random.choice(list(BOARD.get_valid_moves()))
 
                     elif action not in BOARD.get_valid_moves():  # Random move is invalid
 
                         if agent_training != 'USER':
-                            # agent.update_replay_memory((current_state, action, -env.ILLEGAL_MOVE_PENALTY,
-                            #                             current_state, done))
                             action = random.choice(list(BOARD.get_valid_moves()))
-                            # agent.train(done)
-                            # episode_reward -= env.ILLEGAL_MOVE_PENALTY
-                            # specific_rewards[-env.ILLEGAL_MOVE_PENALTY][episode] += 1
 
                 new_state, reward, done = env.step(action, agent)
 
@@ -1003,8 +924,8 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 last_move = action
 
                 if agent_training != 'USER':
-                    agent.update_replay_memory((current_state, action, reward, new_state, done))
-                    agent.train(done)
+                    agent.update_replay_memory((current_state, action, reward))
+                    agent.train()
 
                 if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                         reward == env.GAME_WIN_REWARD_D:
@@ -1035,17 +956,11 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
                 if agent_training != 'USER':
                     if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                             reward == env.GAME_WIN_REWARD_D:
-                        agent.update_replay_memory(
-                            (last_player_state, last_move, -env.GAME_LOSS_PENALTY, new_state, done))
-                        agent.update_replay_memory((current_state, action, reward, new_state, done))
-                        agent.train(done)
-                        episode_reward -= env.GAME_LOSS_PENALTY
+                        # Twice, once for the game losing move, once for the game winning move
+                        agent.update_replay_memory((last_player_state, last_move, -env.GAME_LOSS_PENALTY))
+                        agent.train()
 
-                    else:
-                        agent.update_replay_memory((current_state, last_move, reward, new_state, done))
-                        if reward == -env.GAME_DRAW_PENALTY:
-                            episode_reward -= env.GAME_DRAW_PENALTY
-                        agent.train(done)
+                    agent.update_replay_memory((current_state, action, reward))
 
                 if reward == env.GAME_WIN_REWARD_H or reward == env.GAME_WIN_REWARD_V or \
                         reward == env.GAME_WIN_REWARD_D:
@@ -1057,59 +972,33 @@ for episode in tqdm(range(1, EPISODES + 1), ascii=True, unit='episode'):
         if player_turn == turn:
             last_player_state = current_state.copy()
 
-        # Error testing code
-
-        # print(f'\n{BOARD}')
-        # print(f'Move by {"Agent" if player_turn == turn else "Bot"}')
-        # print(f'Action was {action}')
-        # print(f'Reward was {reward} which is {results[reward]}')
-        # print(f'Block Loc 1 is {player_1_block_loc} ||| Block Loc 2 is {player_2_block_loc}')
-        # print(f'Rolling reward count {episode_reward}')
-        # print('\n------------------------\n')
-        #
-        # # To give time to analyze step by step
-        # to_continue = input()
-
         turn *= -1
         current_state = new_state
         step += 1
-        reward_sum += episode_reward
         if turn == player_turn:
             specific_rewards[reward][episode] += 1
 
-    # # Printing episode results
-    # print(f'Episode ended in a {results[reward]}')
-    # print(f'\n{BOARD}')
     for entry in specific_rewards:
         specific_rewards[entry].append(0)
     ep_rewards_agent.append(episode_reward)
-    # ep_rewards_bot.append(reward)
 
-    print(f'Episode #{episode}, Winner: {winner}, Result: {results[reward]}\nReward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
+    print(f'Episode #{episode}, Winner: {winner}, Result: {results[reward]}\n'
+          f'Reward: {episode_reward}, Steps: {step}\nEpsilon {epsilon}')
     counting[winner] += 1
-    print(reward_sum)
 
     # ep_rewards.append(episode_reward)
     if not episode % AGGREGATE_STATS_EVERY or episode == 1:
         average_reward = sum(ep_rewards_agent[-AGGREGATE_STATS_EVERY:]) / len(ep_rewards_agent[-AGGREGATE_STATS_EVERY:])
-        #     min_reward = min(ep_rewards[-AGGREGATE_STATS_EVERY:])
-        #     max_reward = max(ep_rewards[-AGGREGATE_STATS_EVERY:])
-        #     agent.tensorboard.update_stats(reward_avg=average_reward, reward_min=min_reward,
-        #                                    reward_max=max_reward, epsilon=epsilon)
-
         agent.model.save(
             f'{MODEL_NAME}/EPISODE_{episode}___AVG_EPISODE_REWARD_{average_reward:_>7.2f}_TRAINING_1')
 
-    # if not episode % LOWER_DECAY or episode == 1:
-    #     if epsilon > MIN_EPSILON:
     epsilon *= EPSILON_DECAY
     epsilon = max(MIN_EPSILON, epsilon)
 
     if episode % 10_000 == 0:  # Reset epsilon every so often
+        if training_mode == 'ADVANCED':  # Updating bots level
+            bot.update_training()
         epsilon = 1
-
-    if episode == 10_000:  # Changing from the standard random to advanced
-        bot = AdvancedBot()
 
 print(ep_rewards_agent)
 
@@ -1145,10 +1034,3 @@ plt.xlabel('Episode')
 plt.legend()
 plt.show()
 
-labels = ['Horizontal Win', 'Vertical Win', 'Diagonal Win', 'Bot Win', 'Draw']
-values = [specific_rewards[env.GAME_WIN_REWARD_H], specific_rewards[env.GAME_WIN_REWARD_V],
-          specific_rewards[env.GAME_WIN_REWARD_D], counting['BOT WIN'], counting['DRAW']]
-
-plt.ylabel('# of Wins')
-plt.xlabel('Type of Win')
-plt.show()
